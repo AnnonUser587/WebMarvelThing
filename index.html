@@ -37,6 +37,7 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <section class="card">
 <h2>Stats API setup</h2>
 <input id="key" type="text" placeholder="marvelrivalsapi.com API key" autocomplete="off" autocapitalize="off" spellcheck="false">
+<input id="season" type="number" min="1" placeholder="Tracker season (blank = auto)"><div class="st" id="sn" style="margin:-2px 0 8px"></div>
 <details><summary>Advanced</summary>
 <input id="base" placeholder="API base URL" value="https://marvelrivalsapi.com/api/v1"></details>
 <div class="two"><input id="tu" placeholder="Test a username"><button id="tb" class="g">Test lookup</button></div>
@@ -48,7 +49,7 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <label class="drop"><input type="file" id="file" accept="image/*"><span id="dropt">Tap to choose a screenshot or photo</span></label>
 <img id="pv" class="pv hide" alt="Preview">
 <div class="gap" style="margin-top:10px"><button id="go" disabled>Scan usernames</button></div>
-<p class="s" id="msg" style="margin:8px 0 0"></p>
+<p class="s" id="msg" style="margin:8px 0 0"></p><details><summary>Raw OCR output (for debugging)</summary><pre id="dbg"></pre></details>
 </section>
 
 <section class="card hide" id="s2">
@@ -77,16 +78,23 @@ const STOP=new Set((HEROES+",attack,defend,competitive,convoy,domination,converg
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let img=null,cands=[],players=[];
+const showSeason=()=>{$("sn").textContent=seasonNum()?"Fallback links use season "+seasonNum()+($("season").value.trim()?" (manual)":" (auto)"):"Fallback links use tracker.gg's current season (auto)"};$("season").oninput=()=>{save();showSeason()};
 $("hl").innerHTML=HL.map(h=>`<option value="${esc(h)}">`).join("");
-for(const k of ["key","base"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
-const save=()=>{try{localStorage.setItem("rb_key",$("key").value.trim());localStorage.setItem("rb_base",$("base").value.trim())}catch(e){}};
-const prof=n=>"https://tracker.gg/marvel-rivals/profile/ign/"+encodeURIComponent(n)+"/overview";
-
+for(const k of ["key","base","season"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
+const save=()=>{try{localStorage.setItem("rb_key",$("key").value.trim());localStorage.setItem("rb_base",$("base").value.trim());localStorage.setItem("rb_season",$("season").value.trim())}catch(e){}};
+/* tracker.gg season numbers (10 = 20, 10.5 = 21, 11 = 22). Start dates are from the official roadmaps (09:00 UTC).
+   Past the last known date the season number is left OFF the link, so tracker.gg shows its own current season. */
+const SEASONS=[[Date.UTC(2026,8,11,9),20],[Date.UTC(2026,9,9,9),21],[Date.UTC(2026,10,13,9),22]];
+const SEASONS_END=Date.UTC(2026,11,11,9);
+const autoSeason=()=>{const n=Date.now();if(n>=SEASONS_END)return null;let r=null;for(const [t,v] of SEASONS)if(n>=t)r=v;return r};
+const seasonNum=()=>{const v=parseInt($("season").value,10);return v>0?v:autoSeason()};
+const prof=n=>{const sn=seasonNum();return "https://tracker.gg/marvel-rivals/profile/ign/"+encodeURIComponent(n)+"/heroes"+(sn?"?season="+sn:"")};
+showSeason();
 /* ---------- OCR (whole image, usernames only) ---------- */
 $("file").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
-  const bm=await createImageBitmap(f),k=Math.min(2,Math.max(0.5,2000/bm.width));
-  const c=document.createElement("canvas");c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);
+  const bm=await createImageBitmap(f),k=Math.min(2.5,Math.max(1,2400/bm.width));
+  const c=document.createElement("canvas");c.width=bm.width*k;c.height=bm.height*k;
   const x=c.getContext("2d");x.filter="grayscale(1) contrast(1.5)";x.drawImage(bm,0,0,c.width,c.height);
   img=c;$("pv").src=URL.createObjectURL(f);$("pv").classList.remove("hide");
   $("dropt").textContent=f.name;$("go").disabled=false;
@@ -107,25 +115,36 @@ function mergeWords(ws){
   }
   return ws;
 }
+const HSET=new Set(HEROES.toLowerCase().split(/[,\s]+/));
+/* the original permissive filter, used if the strict one finds nothing */
+function looseNames(words){
+  const seen=new Set();
+  return words.map(o=>({t:o.text.replace(/^[^\w]+|[^\w-]+$/g,""),c:o.confidence,x0:o.bbox.x0,y0:o.bbox.y0}))
+    .filter(o=>o.t.length>=3&&o.c>=45&&!/^\d+$/.test(o.t)&&/[A-Za-z]/.test(o.t)&&!HSET.has(o.t.toLowerCase())&&!isStop(o.t)&&!seen.has(o.t.toLowerCase())&&seen.add(o.t.toLowerCase()))
+    .map(o=>({...o,sc:o.c,adj:false}));
+}
 const STOPL=[...STOP];
 const isStop=t=>{const l=t.toLowerCase();return STOP.has(l)||(l.length>=5&&STOPL.some(w=>w.includes(l)))};
 function pickNames(words){
   const ws=mergeWords(words),seen=new Set(),out=[];
   for(const o of ws){
-    let t=o.t.replace(/^[^A-Za-z0-9_]+|[^A-Za-z0-9_-]+$/g,"");
-    if(/[^A-Za-z0-9_-]/.test(t))continue;               /* names have no other symbols */
     const h=o.y1-o.y0;
     /* level number just to the left on the same line (the game shows "39 SirChunk") */
-    const adj=ws.some(n=>n!==o&&/^\d{1,3}$/.test(n.t.replace(/[^\d]/g,""))&&n.t.length<=4&&Math.abs((n.y0+n.y1)/2-(o.y0+o.y1)/2)<h*0.6&&o.x0-n.x1>-h*0.3&&o.x0-n.x1<h*2.5);
-    const fused=t.match(/^\d{2,3}[|_-]?(?=[A-Za-z])/);   /* "39SirChunk" where the number got glued on */
-    if(fused)t=t.slice(fused[0].length);
-    if(t.length<3||t.length>16||!/[A-Za-z]/.test(t)||o.c<55||isStop(t)||seen.has(t.toLowerCase()))continue;
-    seen.add(t.toLowerCase());
-    let sc=o.c+(adj||fused?40:0);
-    if(/\d/.test(t))sc+=15;if(/[_-]/.test(t))sc+=15;
-    if(/[a-z]/.test(t)&&/[A-Z]/.test(t))sc+=10;
-    if(/^[A-Z]+$/.test(t))sc-=25;
-    out.push({t,c:o.c,sc,adj:!!(adj||fused),x0:o.x0,y0:o.y0});
+    const numLeft=ws.some(n=>n!==o&&/^\d{1,3}$/.test(n.t.replace(/[^\d]/g,""))&&n.t.length<=4&&Math.abs((n.y0+n.y1)/2-(o.y0+o.y1)/2)<h*0.6&&o.x0-n.x1>-h*0.3&&o.x0-n.x1<h*2.5);
+    const pieces=o.t.split(/[^A-Za-z0-9_-]+/).filter(Boolean); /* "71|PregnancyJeff" -> 71, PregnancyJeff */
+    pieces.forEach((p,pi)=>{
+      let t=p.replace(/^[-_]+(?=[A-Za-z0-9])/,"").replace(/-+$/,"");
+      const fused=t.match(/^\d{2,3}(?:[|_-]|l(?=[A-Z])|I(?=[A-Z][a-z]))?(?=[A-Za-z])/);   /* "39SirChunk" where the number got glued on */
+      if(fused)t=t.slice(fused[0].length);
+      const adj=numLeft||!!fused||(pi>0&&/^\d{1,3}$/.test(pieces[pi-1]));
+      if(t.length<3||t.length>16||!/[A-Za-z]/.test(t)||o.c<45||isStop(t)||seen.has(t.toLowerCase()))return;
+      seen.add(t.toLowerCase());
+      let sc=o.c+(adj?40:0);
+      if(/\d/.test(t))sc+=15;if(/[_-]/.test(t))sc+=15;
+      if(/[a-z]/.test(t)&&/[A-Z]/.test(t))sc+=10;
+      if(/^[A-Z]+$/.test(t))sc-=25;
+      out.push({t,c:o.c,sc,adj,x0:o.x0,x1:o.x1,y0:o.y0,y1:o.y1});
+    });
   }
   return out;
 }
@@ -146,19 +165,42 @@ $("go").onclick=async()=>{
   try{
     const w=await Tesseract.createWorker("eng",1,{logger:p=>{if(p.status==="recognizing text")m.textContent="Scanning… "+Math.round(p.progress*100)+"%"}});
     await w.setParameters({tessedit_pageseg_mode:"11"});
-    let found=pickNames((await w.recognize(img)).data.words||[]);
-    if(found.filter(o=>o.adj).length<3){
-      m.textContent="Trying a second pass…";
-      const more=pickNames((await w.recognize(whiteMask(img))).data.words||[]);
-      const have=new Set(found.map(o=>o.t.toLowerCase()));
-      more.forEach(o=>{if(!have.has(o.t.toLowerCase()))found.push(o)});
+    const raw=(await w.recognize(img)).data.words||[];
+    const mk=whiteMask(img),acc=[];
+    const same=(a,b)=>{const h=Math.max(a.y1-a.y0,b.y1-b.y0),ov=Math.min(a.x1,b.x1)-Math.max(a.x0,b.x0);return Math.abs((a.y0+a.y1)/2-(b.y0+b.y1)/2)<h*0.6&&ov>0.4*Math.min(a.x1-a.x0,b.x1-b.x0)};
+    const take=l=>l.forEach(o=>{const i=acc.findIndex(p=>p.t.toLowerCase()===o.t.toLowerCase()||same(p,o));if(i<0)acc.push(o);else if(o.sc>acc[i].sc)acc[i]=o});
+    try{take(pickNames(raw))}catch(e){console.error(e)}
+    m.textContent="Second pass (white text only)…";
+    let raw2=[];
+    try{raw2=(await w.recognize(mk)).data.words||[];take(pickNames(raw2))}catch(e){console.error(e)}
+    /* every level number marks a player row; re-read any row that has no name yet */
+    const anchors=[];
+    [...raw,...raw2].forEach(wd=>{const t=(wd.text||"").trim();if(!/^\d{1,3}$/.test(t)||wd.confidence<50)return;
+      const a={x0:wd.bbox.x0,x1:wd.bbox.x1,y0:wd.bbox.y0,y1:wd.bbox.y1},h=a.y1-a.y0;
+      if(!anchors.some(b=>Math.abs((b.y0+b.y1)/2-(a.y0+a.y1)/2)<h*0.6&&Math.abs(b.x0-a.x0)<h*2))anchors.push(a)});
+    await w.setParameters({tessedit_pageseg_mode:"7"});
+    let n=0;
+    for(const a of anchors){
+      const h=a.y1-a.y0;
+      if(acc.some(p=>Math.abs((p.y0+p.y1)/2-(a.y0+a.y1)/2)<h*0.8&&p.x0>=a.x1-h*0.5&&p.x0-a.x1<h*5))continue;
+      m.textContent="Re-reading missed row "+(++n)+"…";
+      try{
+        const sx=Math.max(0,a.x1),sy=Math.max(0,a.y0-h*0.4),sw=Math.min(mk.width-sx,h*14),sh=Math.min(mk.height-sy,h*1.8),k=Math.max(1,Math.min(4,90/sh));
+        const cv=document.createElement("canvas");cv.width=Math.round(sw*k)+40;cv.height=Math.round(sh*k)+40;
+        const cx=cv.getContext("2d");cx.fillStyle="#fff";cx.fillRect(0,0,cv.width,cv.height);cx.drawImage(mk,sx,sy,sw,sh,20,20,sw*k,sh*k);
+        const rw=((await w.recognize(cv)).data.words||[]).map(o=>({text:o.text,confidence:o.confidence,bbox:{x0:sx+(o.bbox.x0-20)/k,x1:sx+(o.bbox.x1-20)/k,y0:sy+(o.bbox.y0-20)/k,y1:sy+(o.bbox.y1-20)/k}}));
+        const got=pickNames(rw);got.forEach(o=>{o.adj=true;o.sc+=40});take(got);
+      }catch(e){console.error(e)}
     }
+    let found=acc.slice();
+    if(!found.length)found=looseNames(raw);
     await w.terminate();
+    $("dbg").textContent="PASS 1: "+raw.map(o=>o.text+" ("+Math.round(o.confidence)+")").join("  ")+"\n\nPASS 2: "+raw2.map(o=>o.text+" ("+Math.round(o.confidence)+")").join("  ");
     const best=found.slice().sort((a,b)=>b.sc-a.sc).slice(0,16);
     const anyAdj=best.some(o=>o.adj);
     best.forEach((o,i)=>o.s=(i<12&&(!anyAdj||o.adj))?1:0);
     cands=best.sort((a,b)=>Math.round(a.y0/40)-Math.round(b.y0/40)||a.x0-b.x0);
-    render();m.textContent=cands.length?"Done. Turn off anything that isn't a username and fix misreads with ✎.":"Nothing readable found. Add names manually below.";
+    render();m.textContent=cands.length?"Done. Turn off anything that isn't a username and fix misreads with ✎.":"Read "+raw.length+" words but none looked like a username. Add names manually below.";
   }catch(e){m.textContent="OCR failed: "+e.message+". Add names manually.";cands=[];render()}
   $("go").disabled=false;
 };
@@ -201,7 +243,7 @@ $("tb").onclick=async()=>{
   if(!$("key").value.trim()){o.textContent="Enter your API key first.";return}
   o.textContent="Looking up…";
   try{o.innerHTML="Top heroes: <b>"+esc((await lookup(n)).join(", "))+"</b>"}
-  catch(e){o.innerHTML=esc(netMsg(e.message))+(e.raw?"<pre>"+esc(e.raw.slice(0,1500))+"</pre>":"")+`<br><a class="lk f" target="_blank" rel="noopener" href="${prof(n)}">Open on tracker.gg ↗</a>`}
+  catch(e){o.innerHTML=esc(netMsg(e.message))+(e.raw?"<pre>"+esc(e.raw.slice(0,1500))+"</pre>":"")+`<br><a class="lk f" target="_blank" rel="noopener" href="${prof(n)}">Open tracker.gg heroes ↗</a>`}
 };
 
 /* ---------- Players ---------- */
@@ -212,10 +254,10 @@ $("confirm").onclick=async()=>{
   const key=$("key").value.trim();
   if(key)players.forEach(p=>p.st="Looking up…");else players.forEach(p=>p.fail=true);
   $("s3").classList.remove("hide");renderPlayers();$("s3").scrollIntoView({behavior:"smooth"});
-  $("s3m").textContent=key?"Fetching top heroes…":"No API key, so open each tracker.gg profile and add their top heroes manually.";
+  $("s3m").textContent=key?"Fetching top heroes…":"No API key, so open each tracker.gg heroes page and add their top heroes manually.";
   if(!key)return;
   let bad=0;
-  await Promise.all(players.map(async p=>{try{p.h=await lookup(p.n);p.st="Loaded"}catch(e){bad++;p.fail=true;p.st="Lookup failed ("+netMsg(e.message)+"). Open the tracker.gg profile and add heroes manually."}}));
+  await Promise.all(players.map(async p=>{try{p.h=await lookup(p.n);p.st="Loaded"}catch(e){bad++;p.fail=true;p.st="Lookup failed ("+netMsg(e.message)+"). Open the tracker.gg heroes page and add heroes manually."}}));
   renderPlayers();$("s3m").textContent=bad?bad+" lookup(s) failed. Use the tracker.gg buttons, then add heroes by hand.":"All loaded. Check them, then build the list.";
 };
 function renderPlayers(){
@@ -223,7 +265,7 @@ function renderPlayers(){
   players.forEach(p=>{
     const r=document.createElement("div");r.className="row";
     const draw=()=>{
-      r.innerHTML=`<div class="nm">${esc(p.n)}</div><div class="st">${esc(p.st)}</div><div>${p.h.map((x,i)=>`<span class="chip c0" style="opacity:1">${i+1}. ${esc(x)} <i data-i="${i}">×</i></span>`).join("")}</div>${p.h.length<3?`<input list="hl" placeholder="Add hero #${p.h.length+1}">`:""}<a class="lk${p.fail?" f":""}" target="_blank" rel="noopener" href="${prof(p.n)}">tracker.gg profile ↗</a>`;
+      r.innerHTML=`<div class="nm">${esc(p.n)}</div><div class="st">${esc(p.st)}</div><div>${p.h.map((x,i)=>`<span class="chip c0" style="opacity:1">${i+1}. ${esc(x)} <i data-i="${i}">×</i></span>`).join("")}</div>${p.h.length<3?`<input list="hl" placeholder="Add hero #${p.h.length+1}">`:""}<a class="lk${p.fail?" f":""}" target="_blank" rel="noopener" href="${prof(p.n)}">tracker.gg heroes ↗</a>`;
       r.querySelectorAll("i").forEach(b=>b.onclick=()=>{p.h.splice(+b.dataset.i,1);draw()});
       const inp=r.querySelector("input");
       if(inp)inp.onchange=()=>{const v=HL.find(h=>h.toLowerCase()===inp.value.trim().toLowerCase());if(v&&!p.h.includes(v)){p.h.push(v);p.st="Edited"}draw()};
