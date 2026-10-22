@@ -16,7 +16,7 @@ button{font:inherit;border:0;border-radius:10px;padding:12px 16px;background:var
 button.g{background:transparent;color:var(--tx);border:1px solid var(--bd)}button:disabled{opacity:.5}
 input{font:inherit;width:100%;padding:10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);margin-bottom:6px}
 .drop{display:block;border:2px dashed var(--bd);border-radius:12px;padding:22px;text-align:center;color:var(--mut);cursor:pointer}
-.drop input{display:none}img.pv{width:100%;border-radius:10px;margin-top:10px}
+.drop input{display:none}.pw{position:relative;margin-top:10px}.pw img{width:100%;display:block;border-radius:10px}.bx{position:absolute;border:1.5px solid;border-radius:3px;pointer-events:none}.bx.a{border-color:var(--al)}.bx.e{border-color:var(--en)}
 .tl{font-weight:700;font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;margin:10px 0 6px}
 .al{color:var(--al)}.en{color:var(--en)}
 .chip{display:inline-flex;gap:8px;align-items:center;border:2px solid var(--bd);border-radius:99px;padding:6px 12px;margin:0 6px 8px 0;font-size:.9rem;cursor:pointer;user-select:none}
@@ -36,7 +36,7 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 
 <section class="card">
 <h2>Stats API setup</h2>
-<input id="key" type="password" placeholder="marvelrivalsapi.com API key" autocomplete="off">
+<input id="key" type="text" placeholder="marvelrivalsapi.com API key" autocomplete="off" autocapitalize="off" spellcheck="false">
 <details><summary>Advanced</summary>
 <input id="base" placeholder="API base URL" value="https://marvelrivalsapi.com/api/v1"></details>
 <div class="two"><input id="tu" placeholder="Test a username"><button id="tb" class="g">Test lookup</button></div>
@@ -46,9 +46,9 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <section class="card">
 <h2>1 · Loading screenshot</h2>
 <label class="drop"><input type="file" id="file" accept="image/*"><span id="dropt">Tap to choose a screenshot</span></label>
-<img id="pv" class="pv hide" alt="Preview">
+<div id="pw" class="pw hide"><img id="pv" alt="Preview"><div id="ov"></div></div>
 <div class="gap" style="margin-top:10px"><button id="go" disabled>Scan usernames</button></div>
-<p class="s" id="msg" style="margin:8px 0 0"></p>
+<p class="s" id="msg" style="margin:8px 0 0">Only the username strips (boxes on the preview) are scanned: left = your team, right = enemy.</p>
 </section>
 
 <section class="card hide" id="s2">
@@ -75,41 +75,60 @@ const HEROES="Adam Warlock,Black Panther,Black Widow,Blade,Bruce Banner,Captain 
 const HL=HEROES.split(","),HSET=new Set(HEROES.toLowerCase().split(/[,\s]+/));
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let img=null,cands=[],players=[];
+let cands=[],players=[];
 $("hl").innerHTML=HL.map(h=>`<option value="${esc(h)}">`).join("");
 for(const k of ["key","base"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
 const save=()=>{try{localStorage.setItem("rb_key",$("key").value.trim());localStorage.setItem("rb_base",$("base").value.trim())}catch(e){}};
 
-/* ---------- OCR ---------- */
+/* ---------- OCR (username strips only) ---------- */
+/* Positions are fractions of the loading screen. Rows slant, so each row has its own x. */
+const ROWS={
+  a:{x:[.112,.096,.079,.062,.044,.028],y:[.272,.405,.541,.676,.809,.947]},
+  e:{x:[.742,.738,.721,.691,.675,.657],y:[.137,.272,.405,.540,.676,.809]}
+};
+const NS=.014,NW=.1,NH=.05; /* offset past the level number, strip width, strip height */
+const boxes=()=>{const o=[];for(const t of["a","e"])ROWS[t].y.forEach((y,i)=>o.push({t,x:ROWS[t].x[i]+NS,y:y-NH/2,w:NW,h:NH}));return o};
+let src=null;
 $("file").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
-  const bm=await createImageBitmap(f),k=Math.min(2.5,Math.max(1,2400/bm.width));
-  const c=document.createElement("canvas");c.width=bm.width*k;c.height=bm.height*k;
-  const x=c.getContext("2d");x.filter="grayscale(1) contrast(1.6)";x.drawImage(bm,0,0,c.width,c.height);
-  img=c;$("pv").src=URL.createObjectURL(f);$("pv").classList.remove("hide");
+  src=await createImageBitmap(f);
+  $("pv").src=URL.createObjectURL(f);$("pw").classList.remove("hide");
+  $("ov").innerHTML=boxes().map(b=>`<div class="bx ${b.t}" style="left:${b.x*100}%;top:${b.y*100}%;width:${b.w*100}%;height:${b.h*100}%"></div>`).join("");
   $("dropt").textContent=f.name;$("go").disabled=false;
 };
+/* keep only near-white text (names); coloured costume text and art become background */
+function prep(b){
+  const sx=b.x*src.width,sy=b.y*src.height,sw=b.w*src.width,sh=b.h*src.height;
+  const k=Math.max(1.5,Math.min(5,100/sh)),w=Math.round(sw*k),h=Math.round(sh*k);
+  const c=document.createElement("canvas");c.width=w;c.height=h;
+  const x=c.getContext("2d");x.drawImage(src,sx,sy,sw,sh,0,0,w,h);
+  const d=x.getImageData(0,0,w,h),p=d.data;
+  for(let i=0;i<p.length;i+=4){
+    const m=Math.min(p[i],p[i+1],p[i+2]),v=Math.max(0,Math.min(1,(m-110)/80));
+    p[i]=p[i+1]=p[i+2]=255-v*255;p[i+3]=255;
+  }
+  x.putImageData(d,0,0);
+  const o=document.createElement("canvas");o.width=w+40;o.height=h+40;
+  const y=o.getContext("2d");y.fillStyle="#fff";y.fillRect(0,0,o.width,o.height);y.drawImage(c,20,20);
+  return o;
+}
 $("go").onclick=async()=>{
   const m=$("msg");$("go").disabled=true;m.textContent="Loading OCR engine…";
   try{
-    const w=await Tesseract.createWorker("eng",1,{logger:p=>{if(p.status==="recognizing text")m.textContent="Scanning… "+Math.round(p.progress*100)+"%"}});
-    await w.setParameters({tessedit_pageseg_mode:"11"});
-    const {data}=await w.recognize(img);await w.terminate();
-    const seen=new Set();
-    cands=(data.words||[]).map(o=>({t:o.text.replace(/^[^\w]+|[^\w]+$/g,""),c:o.confidence,x:(o.bbox.x0+o.bbox.x1)/2,y:(o.bbox.y0+o.bbox.y1)/2}))
-      .filter(o=>o.t.length>=3&&o.c>=45&&!/^\d+$/.test(o.t)&&!HSET.has(o.t.toLowerCase())&&!seen.has(o.t.toLowerCase())&&seen.add(o.t.toLowerCase()))
-      .sort((a,b)=>b.c-a.c).slice(0,24);
-    autoAssign();render();m.textContent=cands.length?"":"Nothing readable found. Add names manually below.";
+    const w=await Tesseract.createWorker("eng");
+    await w.setParameters({tessedit_pageseg_mode:"7",tessedit_char_whitelist:"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.*"});
+    const bx=boxes();cands=[];
+    for(let i=0;i<bx.length;i++){
+      m.textContent="Scanning name "+(i+1)+" of "+bx.length+"…";
+      const {data}=await w.recognize(prep(bx[i]));
+      const t=(data.text||"").trim().split(/\s+/).filter(z=>z.length>=2)[0]||"";
+      if(t)cands.push({t,c:data.confidence,s:t.includes("*")?0:(bx[i].t==="a"?1:2)});
+    }
+    await w.terminate();
+    render();m.textContent=cands.length?"Done. Fix any misreads with ✎. Hidden names (*****) are ignored.":"Nothing readable found. Check the boxes line up with the names, or add names manually.";
   }catch(e){m.textContent="OCR failed: "+e.message+". Add names manually.";cands=[];render()}
   $("go").disabled=false;
 };
-function autoAssign(){
-  const top=cands.slice(0,12);if(!top.length)return;
-  const v=a=>{const m=a.reduce((s,n)=>s+n,0)/a.length;return a.reduce((s,n)=>s+(n-m)**2,0)/a.length};
-  const ax=v(top.map(o=>o.x))>v(top.map(o=>o.y))?"x":"y";
-  const med=top.map(o=>o[ax]).sort((a,b)=>a-b)[Math.floor(top.length/2)];
-  cands.forEach((o,i)=>o.s=i<12?(o[ax]<med?1:2):0);
-}
 function render(){
   $("s2").classList.remove("hide");
   $("chips").innerHTML="";
