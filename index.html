@@ -35,11 +35,6 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <p class="s">Scan the enemy team, then open each player’s tracker.gg profile.</p>
 
 <section class="card">
-<h2>Tracker.gg season</h2>
-<input id="season" type="number" min="1" placeholder="Season number (blank = auto)"><div class="st" id="sn" style="margin:-2px 0 0"></div>
-</section>
-
-<section class="card">
 <h2>1 · Enemy team screenshot</h2>
 <label class="drop"><input type="file" id="file" accept="image/*"><span id="dropt">Tap to choose a screenshot or photo</span></label>
 <img id="pv" class="pv hide" alt="Preview">
@@ -68,17 +63,7 @@ const STOP=new Set((HEROES+",attack,defend,competitive,convoy,domination,converg
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let img=null,cands=[],players=[];
-const showSeason=()=>{$("sn").textContent=seasonNum()?"Profile links use season "+seasonNum()+($("season").value.trim()?" (manual)":" (auto)"):"Profile links use tracker.gg's current season (auto)"};$("season").oninput=()=>{save();showSeason()};
-for(const k of ["season"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
-const save=()=>{try{localStorage.setItem("rb_season",$("season").value.trim())}catch(e){}};
-/* tracker.gg season numbers (10 = 20, 10.5 = 21, 11 = 22). Start dates are from the official roadmaps (09:00 UTC).
-   Past the last known date the season number is left OFF the link, so tracker.gg shows its own current season. */
-const SEASONS=[[Date.UTC(2026,8,11,9),20],[Date.UTC(2026,9,9,9),21],[Date.UTC(2026,10,13,9),22]];
-const SEASONS_END=Date.UTC(2026,11,11,9);
-const autoSeason=()=>{const n=Date.now();if(n>=SEASONS_END)return null;let r=null;for(const [t,v] of SEASONS)if(n>=t)r=v;return r};
-const seasonNum=()=>{const v=parseInt($("season").value,10);return v>0?v:autoSeason()};
-const prof=n=>{const sn=seasonNum();return "https://tracker.gg/marvel-rivals/profile/ign/"+encodeURIComponent(n)+"/heroes"+(sn?"?season="+sn:"")};
-showSeason();
+const prof=n=>"https://tracker.gg/marvel-rivals/profile/ign/"+encodeURIComponent(n)+"/overview";
 /* ---------- OCR (whole image, usernames only) ---------- */
 $("file").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
@@ -278,7 +263,6 @@ $("ma").onclick=add;
 
 /* ---------- Players ---------- */
 $("confirm").onclick=()=>{
-  save();
   players=cands.filter(o=>o.s).map(o=>({n:o.t}));
   if(!players.length)return;
   $("s3").classList.remove("hide");renderPlayers();$("s3").scrollIntoView({behavior:"smooth"});
