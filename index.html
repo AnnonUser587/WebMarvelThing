@@ -32,16 +32,11 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:.7rem;max-height:200px;o
 details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9rem}
 </style></head><body><main>
 <h1>Rivals Ban Helper</h1>
-<p class="s">Screenshot the enemy team and get a ban list.</p>
+<p class="s">Scan the enemy team, open each player’s tracker.gg heroes page, and build a ban list.</p>
 
 <section class="card">
-<h2>Stats API setup</h2>
-<input id="key" type="text" placeholder="marvelrivalsapi.com API key" autocomplete="off" autocapitalize="off" spellcheck="false">
-<input id="season" type="number" min="1" placeholder="Tracker season (blank = auto)"><div class="st" id="sn" style="margin:-2px 0 8px"></div>
-<details><summary>Advanced</summary>
-<input id="base" placeholder="API base URL" value="https://marvelrivalsapi.com/api/v1"></details>
-<div class="two"><input id="tu" placeholder="Test a username"><button id="tb" class="g">Test lookup</button></div>
-<div id="tr" class="st"></div>
+<h2>Tracker.gg season</h2>
+<input id="season" type="number" min="1" placeholder="Season number (blank = auto)"><div class="st" id="sn" style="margin:-2px 0 0"></div>
 </section>
 
 <section class="card">
@@ -80,8 +75,8 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",
 let img=null,cands=[],players=[];
 const showSeason=()=>{$("sn").textContent=seasonNum()?"Fallback links use season "+seasonNum()+($("season").value.trim()?" (manual)":" (auto)"):"Fallback links use tracker.gg's current season (auto)"};$("season").oninput=()=>{save();showSeason()};
 $("hl").innerHTML=HL.map(h=>`<option value="${esc(h)}">`).join("");
-for(const k of ["key","base","season"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
-const save=()=>{try{localStorage.setItem("rb_key",$("key").value.trim());localStorage.setItem("rb_base",$("base").value.trim());localStorage.setItem("rb_season",$("season").value.trim())}catch(e){}};
+for(const k of ["season"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
+const save=()=>{try{localStorage.setItem("rb_season",$("season").value.trim())}catch(e){}};
 /* tracker.gg season numbers (10 = 20, 10.5 = 21, 11 = 22). Start dates are from the official roadmaps (09:00 UTC).
    Past the last known date the season number is left OFF the link, so tracker.gg shows its own current season. */
 const SEASONS=[[Date.UTC(2026,8,11,9),20],[Date.UTC(2026,9,9,9),21],[Date.UTC(2026,10,13,9),22]];
@@ -217,55 +212,20 @@ function render(){
 const add=()=>{const n=$("mn").value.trim();if(!n)return;cands.unshift({t:n,s:1,c:100});$("mn").value="";render()};
 $("ma").onclick=add;
 
-/* ---------- Stats API ---------- */
-function extract(j){
-  const arrs=[];
-  (function walk(o,p){
-    if(Array.isArray(o)){if(o.length&&o.every(x=>x&&typeof x==="object"&&(x.hero_name||x.hero)))arrs.push([p,o]);o.forEach(x=>walk(x,p))}
-    else if(o&&typeof o==="object")for(const k in o)walk(o[k],p+"."+k);
-  })(j,"");
-  const pick=arrs.find(([p])=>/ranked/i.test(p)&&!/unranked/i.test(p))||arrs[0];
-  if(!pick)return [];
-  const sc=h=>+(h.matches||h.total_matches||h.play_time||h.time_played||0);
-  return pick[1].slice().sort((a,b)=>sc(b)-sc(a)).slice(0,3).map(h=>String(h.hero_name||h.hero));
-}
-const netMsg=m=>/failed to fetch|networkerror|load failed/i.test(m)?"Request blocked (likely CORS or a wrong URL)":m;
-async function lookup(name){
-  const base=($("base").value.trim()||"https://marvelrivalsapi.com/api/v1").replace(/\/$/,"");
-  const r=await fetch(base+"/player/"+encodeURIComponent(name),{headers:{"x-api-key":$("key").value.trim()}});
-  const txt=await r.text();let j=null;try{j=JSON.parse(txt)}catch(e){}
-  if(!r.ok)throw Object.assign(new Error("HTTP "+r.status),{raw:txt});
-  const h=extract(j);if(!h.length)throw Object.assign(new Error("Response had no hero list"),{raw:txt});
-  return h;
-}
-$("tb").onclick=async()=>{
-  save();const n=$("tu").value.trim(),o=$("tr");if(!n)return;
-  if(!$("key").value.trim()){o.textContent="Enter your API key first.";return}
-  o.textContent="Looking up…";
-  try{o.innerHTML="Top heroes: <b>"+esc((await lookup(n)).join(", "))+"</b>"}
-  catch(e){o.innerHTML=esc(netMsg(e.message))+(e.raw?"<pre>"+esc(e.raw.slice(0,1500))+"</pre>":"")+`<br><a class="lk f" target="_blank" rel="noopener" href="${prof(n)}">Open tracker.gg heroes ↗</a>`}
-};
-
 /* ---------- Players ---------- */
-$("confirm").onclick=async()=>{
+$("confirm").onclick=()=>{
   save();
-  players=cands.filter(o=>o.s).map(o=>({n:o.t,h:[],st:"Add heroes",fail:false}));
+  players=cands.filter(o=>o.s).map(o=>({n:o.t,h:[],st:"Open their heroes page, then add their top heroes below."}));
   if(!players.length)return;
-  const key=$("key").value.trim();
-  if(key)players.forEach(p=>p.st="Looking up…");else players.forEach(p=>p.fail=true);
   $("s3").classList.remove("hide");renderPlayers();$("s3").scrollIntoView({behavior:"smooth"});
-  $("s3m").textContent=key?"Fetching top heroes…":"No API key, so open each tracker.gg heroes page and add their top heroes manually.";
-  if(!key)return;
-  let bad=0;
-  await Promise.all(players.map(async p=>{try{p.h=await lookup(p.n);p.st="Loaded"}catch(e){bad++;p.fail=true;p.st="Lookup failed ("+netMsg(e.message)+"). Open the tracker.gg heroes page and add heroes manually."}}));
-  renderPlayers();$("s3m").textContent=bad?bad+" lookup(s) failed. Use the tracker.gg buttons, then add heroes by hand.":"All loaded. Check them, then build the list.";
+  $("s3m").textContent="Tap each tracker.gg link, then add that player’s top 3 heroes in order.";
 };
 function renderPlayers(){
   const box=$("plist");box.innerHTML="";
   players.forEach(p=>{
     const r=document.createElement("div");r.className="row";
     const draw=()=>{
-      r.innerHTML=`<div class="nm">${esc(p.n)}</div><div class="st">${esc(p.st)}</div><div>${p.h.map((x,i)=>`<span class="chip c0" style="opacity:1">${i+1}. ${esc(x)} <i data-i="${i}">×</i></span>`).join("")}</div>${p.h.length<3?`<input list="hl" placeholder="Add hero #${p.h.length+1}">`:""}<a class="lk${p.fail?" f":""}" target="_blank" rel="noopener" href="${prof(p.n)}">tracker.gg heroes ↗</a>`;
+      r.innerHTML=`<div class="nm">${esc(p.n)}</div><div class="st">${esc(p.st)}</div><div>${p.h.map((x,i)=>`<span class="chip c0" style="opacity:1">${i+1}. ${esc(x)} <i data-i="${i}">×</i></span>`).join("")}</div>${p.h.length<3?`<input list="hl" placeholder="Add hero #${p.h.length+1}">`:""}<a class="lk f" target="_blank" rel="noopener" href="${prof(p.n)}">tracker.gg heroes ↗</a>`;
       r.querySelectorAll("i").forEach(b=>b.onclick=()=>{p.h.splice(+b.dataset.i,1);draw()});
       const inp=r.querySelector("input");
       if(inp)inp.onchange=()=>{const v=HL.find(h=>h.toLowerCase()===inp.value.trim().toLowerCase());if(v&&!p.h.includes(v)){p.h.push(v);p.st="Edited"}draw()};
