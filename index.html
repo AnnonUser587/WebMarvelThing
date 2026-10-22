@@ -32,7 +32,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:.7rem;max-height:200px;o
 details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9rem}
 </style></head><body><main>
 <h1>Rivals Ban Helper</h1>
-<p class="s">Scan the enemy team, open each player’s tracker.gg heroes page, and build a ban list.</p>
+<p class="s">Scan the enemy team, then open each player’s tracker.gg profile.</p>
 
 <section class="card">
 <h2>Tracker.gg season</h2>
@@ -52,17 +52,12 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <p class="s">Tap a name to turn it on or off. Tap ✎ to fix a misread (check <b>_</b> and <b>-</b>). Add anything it missed below.</p>
 <div id="chips"></div>
 <div class="two"><input id="mn" placeholder="Add a name"><button class="g" id="ma">+ Add</button></div>
-<div class="gap"><button id="confirm">Confirm &amp; get top heroes</button></div>
+<div class="gap"><button id="confirm">Confirm &amp; open profiles</button></div>
 </section>
 
 <section class="card hide" id="s3">
-<h2>3 · Top 3 heroes per player</h2>
-<p class="s" id="s3m"></p><div id="plist"></div><datalist id="hl"></datalist>
-<div class="gap"><button id="sum">Build ban list</button></div>
-</section>
-
-<section class="hide" id="s4">
-<div class="card"><h2 class="en">Ban list</h2><div id="ban"></div></div>
+<h2>3 · Player profiles</h2>
+<p class="s" id="s3m"></p><div id="plist"></div>
 </section>
 </main>
 <script>
@@ -73,8 +68,7 @@ const STOP=new Set((HEROES+",attack,defend,competitive,convoy,domination,converg
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let img=null,cands=[],players=[];
-const showSeason=()=>{$("sn").textContent=seasonNum()?"Fallback links use season "+seasonNum()+($("season").value.trim()?" (manual)":" (auto)"):"Fallback links use tracker.gg's current season (auto)"};$("season").oninput=()=>{save();showSeason()};
-$("hl").innerHTML=HL.map(h=>`<option value="${esc(h)}">`).join("");
+const showSeason=()=>{$("sn").textContent=seasonNum()?"Profile links use season "+seasonNum()+($("season").value.trim()?" (manual)":" (auto)"):"Profile links use tracker.gg's current season (auto)"};$("season").oninput=()=>{save();showSeason()};
 for(const k of ["season"])try{const v=localStorage.getItem("rb_"+k);if(v)$(k).value=v}catch(e){}
 const save=()=>{try{localStorage.setItem("rb_season",$("season").value.trim())}catch(e){}};
 /* tracker.gg season numbers (10 = 20, 10.5 = 21, 11 = 22). Start dates are from the official roadmaps (09:00 UTC).
@@ -285,28 +279,17 @@ $("ma").onclick=add;
 /* ---------- Players ---------- */
 $("confirm").onclick=()=>{
   save();
-  players=cands.filter(o=>o.s).map(o=>({n:o.t,h:[],st:"Open their heroes page, then add their top heroes below."}));
+  players=cands.filter(o=>o.s).map(o=>({n:o.t}));
   if(!players.length)return;
   $("s3").classList.remove("hide");renderPlayers();$("s3").scrollIntoView({behavior:"smooth"});
-  $("s3m").textContent="Tap each tracker.gg link, then add that player’s top 3 heroes in order.";
+  $("s3m").textContent="Tap a button to open that player’s tracker.gg profile.";
 };
 function renderPlayers(){
   const box=$("plist");box.innerHTML="";
   players.forEach(p=>{
     const r=document.createElement("div");r.className="row";
-    const draw=()=>{
-      r.innerHTML=`<div class="nm">${esc(p.n)}</div><div class="st">${esc(p.st)}</div><div>${p.h.map((x,i)=>`<span class="chip c0" style="opacity:1">${i+1}. ${esc(x)} <i data-i="${i}">×</i></span>`).join("")}</div>${p.h.length<3?`<input list="hl" placeholder="Add hero #${p.h.length+1}">`:""}<a class="lk f" target="_blank" rel="noopener" href="${prof(p.n)}">tracker.gg heroes ↗</a>`;
-      r.querySelectorAll("i").forEach(b=>b.onclick=()=>{p.h.splice(+b.dataset.i,1);draw()});
-      const inp=r.querySelector("input");
-      if(inp)inp.onchange=()=>{const v=HL.find(h=>h.toLowerCase()===inp.value.trim().toLowerCase());if(v&&!p.h.includes(v)){p.h.push(v);p.st="Edited"}draw()};
-    };draw();box.appendChild(r);
+    r.innerHTML=`<div class="nm">${esc(p.n)}</div><a class="lk f" target="_blank" rel="noopener" href="${prof(p.n)}">Open tracker.gg profile ↗</a>`;
+    box.appendChild(r);
   });
 }
-$("sum").onclick=()=>{
-  const m=new Map(),W=[3,2,1];
-  players.forEach(p=>p.h.forEach((h,i)=>{const e=m.get(h)||{s:0,who:[]};e.s+=W[i];e.who.push(p.n+" (#"+(i+1)+")");m.set(h,e)}));
-  const a=[...m].sort((x,y)=>y[1].s-x[1].s||y[1].who.length-x[1].who.length);
-  $("ban").innerHTML=a.length?'<p class="s">Points: 3 / 2 / 1 for each player’s #1 / #2 / #3 hero. Ban from the top.</p>'+a.map(([h,e],i)=>`<div class="hero"><div><b>${i+1}. ${esc(h)}</b><div class="sc">${esc(e.who.join(", "))}</div></div><div style="color:var(--en);font-weight:700">${e.s} pts</div></div>`).join(""):'<p class="s">No hero data entered.</p>';
-  $("s4").classList.remove("hide");$("s4").scrollIntoView({behavior:"smooth"});
-};
 </script></body></html>
