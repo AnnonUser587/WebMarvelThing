@@ -62,7 +62,7 @@ const HL=HEROES.split(",");
 const STOP=new Set((HEROES+",attack,defend,competitive,convoy,domination,convergence,path,destroy,stop,from,being,tapping,device,ranked,unranked,victory,defeat,player,level,rank,score,kills,assists,deaths,legendary,immortal,undead,nightmare,amazing,bane,evil,king,land,shark,yggdrasill,yggsgard,match,loading,team,enemy,vs,the,and,hero,skin,mvp,all,evil,spider,man").toLowerCase().split(/[,\s&]+/).filter(Boolean));
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let img=null,cands=[],players=[];
+let img=null,imgC=null,cands=[],players=[];
 const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.maxTouchPoints>1&&/Mac/.test(navigator.platform));
 const prof=n=>"https://tracker.gg/marvel-rivals/profile/ign/"+encodeURIComponent(n)+"/overview";
 /* ---------- OCR (whole image, usernames only) ---------- */
@@ -73,6 +73,8 @@ $("file").onchange=async e=>{
   const c=document.createElement("canvas");c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);
   const x=c.getContext("2d");x.drawImage(bm,0,0,c.width,c.height);if(bm.close)bm.close();
   /* iPhone browsers ignore ctx.filter, so grayscale + contrast is done pixel by pixel */
+  /* colour copy kept only for finding white name text (grayscale can't tell white letters from bright coloured art) */
+  try{if(imgC)imgC.width=imgC.height=0;imgC=document.createElement("canvas");imgC.width=c.width;imgC.height=c.height;imgC.getContext("2d").drawImage(c,0,0)}catch(e){imgC=null}
   const dd=x.getImageData(0,0,c.width,c.height),pp=dd.data;
   for(let i=0;i<pp.length;i+=4){let v=0.2126*pp[i]+0.7152*pp[i+1]+0.0722*pp[i+2];v=(v-127.5)*1.5+127.5;pp[i]=pp[i+1]=pp[i+2]=v<0?0:v>255?255:v}
   x.putImageData(dd,0,0);
@@ -130,14 +132,24 @@ function pickNames(words){
 }
 /* fallback pass: keep only near-white text (names) and blank out art/coloured text */
 function whiteMask(src){
+  const raw=src===imgC; /* the grayscale image is already contrast-stretched; stretch the colour copy the same way */
   const c=document.createElement("canvas");c.width=src.width;c.height=src.height;
   const x=c.getContext("2d");x.drawImage(src,0,0);
   const d=x.getImageData(0,0,c.width,c.height),p=d.data;
   for(let i=0;i<p.length;i+=4){
     const mn=Math.min(p[i],p[i+1],p[i+2]),sat=Math.max(p[i],p[i+1],p[i+2])-mn;
-    const v=sat<70?Math.max(0,Math.min(1,(mn-120)/60)):0;
+    const m2=raw?(mn-127.5)*1.5+127.5:mn,v=sat<SAT?Math.max(0,Math.min(1,(m2-120)/60)):0;
     p[i]=p[i+1]=p[i+2]=255-v*255;
   }
+  x.putImageData(d,0,0);return c;
+}
+const SAT=window.__SAT||110;
+function whiteMaskAt(src,lo){
+  const raw=src===imgC;
+  const c=document.createElement("canvas");c.width=src.width;c.height=src.height;
+  const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(src,0,0);
+  const d=x.getImageData(0,0,c.width,c.height),p=d.data;
+  for(let i=0;i<p.length;i+=4){const mn=Math.min(p[i],p[i+1],p[i+2]),sat=Math.max(p[i],p[i+1],p[i+2])-mn;p[i]=p[i+1]=p[i+2]=(sat<SAT&&(raw?(mn-127.5)*1.5+127.5:mn)>lo)?0:255}
   x.putImageData(d,0,0);return c;
 }
 /* ---------- Row reader: "level | username ... costume" ---------- */
@@ -195,12 +207,23 @@ function mergeRows(rows){
   return R.sort((a,b)=>a.cy-b.cy);
 }
 const keyOf=t=>t.toLowerCase().replace(/\W/g,"");
+const HKEY=new Set(HL.map(keyOf));
+/* similarity 0..1 from edit distance, used so near-identical reads support each other */
+function simOf(a,b){
+  a=a.replace(/\s+/g,"");b=b.replace(/\s+/g,"");if(a===b)return 1;
+  const m=a.length,n=b.length;if(!m||!n)return 0;
+  let p=Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){const q=[i];for(let j=1;j<=n;j++)q[j]=Math.min(p[j]+1,q[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:a[i-1].toLowerCase()===b[j-1].toLowerCase()?0.5:1));p=q}
+  return 1-p[n]/Math.max(m,n);
+}
 function chooseName(c){
   let best=null;
   for(const x of c){
     const votes=c.filter(y=>keyOf(y.t)===keyOf(x.t)).length;
-    let s=x.c+25*(votes-1);if(alnumN(x.t)<3)s-=100;
-    if(!best||s>best.s)best={s,t:x.t,c:x.c,votes};
+    /* exact repeats count fully, close variants (one letter off) count partly */
+    const sup=c.reduce((a,y)=>{const v=simOf(x.t,y.t);return a+(v>=0.99?1:v>=0.75?v*0.6:0)},0);
+    let s=Math.min(x.c,95)*0.6+28*(sup-1)+(x.seg?6:0);if(alnumN(x.t)<3)s-=100;
+    if(!best||s>best.s)best={s,t:x.t,c:x.c,sup,votes:Math.max(votes,Math.floor(sup+0.01))};
   }
   return best;
 }
@@ -278,6 +301,142 @@ async function extraCands(w,g,mk,r){
   }
   return out;
 }
+/* the game font is italic and phone photos add perspective, which tesseract reads badly.
+   Find the lean that makes letter strokes most vertical (sharpest column profile) */
+function estSlant(mk,sx,sy,sw,sh){
+  sx=Math.round(sx);sy=Math.round(sy);sw=Math.round(sw);sh=Math.round(sh);
+  if(sw<8||sh<8)return 0;
+  const d=mk.getContext("2d").getImageData(sx,sy,sw,sh).data,pts=[],step=Math.max(1,Math.round(sh/40));
+  for(let y=0;y<sh;y+=step)for(let x=0;x<sw;x+=step)if(d[(y*sw+x)*4]<128)pts.push(x/step,y/step);
+  if(pts.length<40)return 0;
+  const H=sh/step,W=Math.ceil(sw/step+H)+4;let best=0,bs=-1;
+  for(let s=-0.1;s<=0.61;s+=0.025){
+    const col=new Float32Array(W+Math.ceil(H)),off=Math.ceil(H*0.15)+1;let sc=0;
+    for(let i=0;i<pts.length;i+=2){const c=Math.round(pts[i]+s*(pts[i+1]-H/2)+H*0.3)+off;if(c>=0&&c<col.length)col[c]++}
+    for(const v of col)sc+=v*v;
+    if(sc>bs){bs=sc;best=s}
+  }
+  return best;
+}
+function shearCrop(src,sx,sy,sw,sh,k,s,bin){
+  const cw=Math.round(sw*k),ch=Math.round(sh*k);
+  const inner=document.createElement("canvas");inner.width=cw;inner.height=ch;
+  inner.getContext("2d").drawImage(src,sx,sy,sw,sh,0,0,cw,ch);
+  if(bin)otsuBin(inner);
+  const ex=Math.ceil(Math.abs(s)*ch),cv=document.createElement("canvas");cv.width=cw+ex+40;cv.height=ch+40;
+  const cx=cv.getContext("2d");cx.fillStyle="#fff";cx.fillRect(0,0,cv.width,cv.height);
+  cx.setTransform(1,0,s,1,20+(s<0?ex:0),20);cx.drawImage(inner,0,0);cx.setTransform(1,0,0,1,0,0);
+  return cv;
+}
+/* ---------- Layout finder: locate text lines from the letter shapes themselves ----------
+   The full-page OCR pass gets confused by the hero art and sometimes skips whole rows.
+   Here we label connected blobs in the white-text mask, keep the letter-sized ones and chain
+   neighbours into lines, so every "level | name" line gets found and cropped tightly. */
+function textSegments(mk){
+  const W=mk.width,H=mk.height,d=mk.getContext("2d").getImageData(0,0,W,H).data;
+  const lab=new Int32Array(W*H);let par=new Int32Array(4096),n=1;
+  const find=a=>{while(par[a]!==a){par[a]=par[par[a]];a=par[a]}return a};
+  const uni=(a,b)=>{a=find(a);b=find(b);if(a!==b){if(a<b)par[b]=a;else par[a]=b}};
+  for(let y=0;y<H;y++){const ro=y*W;
+    for(let x=0;x<W;x++){
+      if(d[(ro+x)*4]>=128)continue;
+      let l=0;const nb=[x>0?lab[ro+x-1]:0,y>0&&x>0?lab[ro-W+x-1]:0,y>0?lab[ro-W+x]:0,y>0&&x<W-1?lab[ro-W+x+1]:0];
+      for(const v of nb)if(v){if(!l)l=v;else if(v!==l)uni(l,v)}
+      if(!l){l=n++;if(n>=par.length){const p2=new Int32Array(par.length*2);p2.set(par);par=p2}par[l]=l}
+      lab[ro+x]=l;
+    }
+  }
+  const bx=new Map();
+  for(let y=0;y<H;y++){const ro=y*W;for(let x=0;x<W;x++){const l=lab[ro+x];if(!l)continue;const r=find(l);let b=bx.get(r);
+    if(!b){b={x0:x,x1:x,y0:y,y1:y,a:0};bx.set(r,b)}b.a++;if(x<b.x0)b.x0=x;if(x>b.x1)b.x1=x;if(y>b.y1)b.y1=y}}
+  /* letter-sized blobs only: art, panel edges and halftone specks are dropped */
+  const C=[],A=[];
+  for(const b of bx.values()){const w=b.x1-b.x0+1,h=b.y1-b.y0+1;
+    if(h<=H*0.05&&w<=H*0.08&&b.a>=4)A.push({...b,w,h});
+    if(h<Math.max(6,H*0.004)||h>H*0.05||w>h*5+4||b.a<12||b.a/(w*h)<0.08)continue;
+    C.push({...b,w,h,cy:(b.y0+b.y1)/2});}
+  C.sort((a,b)=>a.x0-b.x0);
+  const P=C.map((_,i)=>i),f2=a=>{while(P[a]!==a){P[a]=P[P[a]];a=P[a]}return a};
+  for(let i=0;i<C.length;i++){const a=C[i];
+    for(let j=i+1;j<C.length&&C[j].x0<=a.x1+1.1*a.h;j++){const b=C[j],hm=Math.max(a.h,b.h),hn=Math.min(a.h,b.h);
+      if(hm/hn>2.6)continue;
+      const ov=Math.min(a.y1,b.y1)-Math.max(a.y0,b.y0);
+      if(ov>=hn*0.4&&b.x0-a.x1<=1.1*Math.min(hm,Math.max(a.h,b.h)))P[f2(j)]=f2(i);}}
+  const G=new Map();C.forEach((c,i)=>{const r=f2(i);(G.get(r)||G.set(r,[]).get(r)).push(c)});
+  const segs=[];
+  for(const g of G.values()){
+    if(g.length<3)continue;
+    const hs=g.map(c=>c.h).sort((a,b)=>a-b),hm=hs[Math.floor(hs.length*0.75)];
+    const cs=g.filter(c=>c.h<=hm*1.5);if(cs.length<3)continue;
+    const y1s=cs.map(c=>c.y1).sort((a,b)=>a-b),by=y1s[Math.floor(y1s.length/2)];
+    if(cs.filter(c=>Math.abs(c.y1-by)<=hm*0.25).length<cs.length*0.55)continue; /* letters share a baseline, art doesn't */
+    const s={x0:Math.min(...cs.map(c=>c.x0)),x1:Math.max(...cs.map(c=>c.x1)),y0:Math.min(...cs.map(c=>c.y0)),y1:Math.max(...cs.map(c=>c.y1)),h:hm,comps:cs,all:A,mk};
+    if(s.x1-s.x0<hm*2)continue;
+    segs.push(s);
+  }
+  return segs;
+}
+function padCrop(src,sx,sy,sw,sh,k,bin,s){
+  sx=Math.max(0,sx);sy=Math.max(0,sy);sw=Math.min(src.width-sx,sw);sh=Math.min(src.height-sy,sh);
+  return shearCrop(src,sx,sy,sw,sh,k,s||0,bin);
+}
+const ocrWords=async(w,cv)=>((await w.recognize(cv)).data.words||[]).map(o=>({t:(o.text||"").trim(),c:o.confidence,x0:o.bbox.x0,x1:o.bbox.x1})).filter(o=>o.t).sort((a,b)=>a.x0-b.x0);
+/* read one line: is it "level  name"? if so, return a row with tight name bounds */
+async function segRow(w,g,mk,s){
+  const h=s.h,k=Math.max(1,Math.min(4,60/h)),src=s.mk||mk;
+  const sx=s.x0-h*0.3,sy=s.y0-h*0.35,sw=Math.min(Math.max(s.x1-s.x0+h*0.6,h*12),h*22),sh=s.y1-s.y0+h*0.8;
+  const ws=await ocrWords(w,padCrop(src,sx,sy,sw,sh,k,false));
+  s.txt=ws.map(x=>x.t).join(" ");
+  if(!ws.length)return null;
+  const toX=x=>Math.max(0,sx)+(x-20)/k;
+  let pe=null,first=ws[0].t;
+  const m=first.match(/^[|\\[(]*(\d{1,3}|[1lI|][0OoUuQD]{1,2})[|Il\\\])]?$/);
+  if(m)pe=toX(ws[0].x1);
+  else{const f=first.match(/^(\d{1,3})[^A-Za-z0-9*]{0,2}(?=[A-Za-z*])/);if(f)pe=toX(ws[0].x0+(ws[0].x1-ws[0].x0)*f[1].length/first.length)}
+  if(pe==null)return null;
+  /* the level digits are a tight cluster of blobs at the start of the line, followed by a clear gap */
+  const L0=s.all.filter(c=>c.y1>=s.y0-h*0.2&&c.y0<=s.y1+h*0.5&&c.h<=h*1.35&&c.h>=h*0.45&&c.x0>=s.x0-h*0.2).sort((a,b)=>a.x0-b.x0);
+  let lvEnd=null;
+  if(L0.length){lvEnd=L0[0].x1;for(let i=1;i<L0.length&&L0[i].x0-lvEnd<h*0.3&&L0[i].x1-L0[0].x0<h*2.2;i++)lvEnd=Math.max(lvEnd,L0[i].x1)}
+  if(lvEnd==null||(m&&Math.abs(lvEnd-pe)>h*2)||lvEnd-pe>h*2)lvEnd=pe; /* a fused OCR word only gives a rough position, so trust the blobs there */
+  if(lvEnd==null)return null;
+  const tail=ws.slice(1).map(x=>x.t).join(" ")+" "+first;
+  const hidden=/\*{2,}/.test(tail);
+  /* name starts at the first blob after the level number (skipping the thin | divider) */
+  const band=c=>c.y1>=s.y0-h*0.2&&c.y0<=s.y1+h*0.5&&c.h<=h*1.35;
+  /* letters touching art can form oversized blobs, so any blob crossing the text band counts here */
+  const rest=s.all.filter(c=>c.y0<s.y1-h*0.2&&c.y1>s.y0+h*0.3&&c.h>=h*0.45&&c.x0>lvEnd-h*0.1&&c.x0<lvEnd+h*2).sort((a,b)=>a.x0-b.x0);
+  while(rest.length>1&&rest[0].w<rest[0].h*0.3&&rest[0].h>=h*0.8&&rest[1].x0-rest[0].x1>h*0.12)rest.shift();
+  /* hidden names are "*****3": a run of small blobs sitting high in the line right after the level */
+  const st=s.all.filter(c=>c.x0>lvEnd&&c.x0<lvEnd+h*4&&c.y1>=s.y0-h*0.2&&c.y0<=s.y1&&c.h>=h*0.15).sort((a,b)=>a.x0-b.x0).slice(0,5);
+  let stars=0;for(const c of st){if(c.h<h*0.7&&c.h>=h*0.28&&c.w<h*0.9&&c.w>=c.h*0.6&&c.w<=c.h*1.7&&c.y1<s.y1-h*0.25)stars++;else break}
+  if(stars>=3)return {cy:(s.y0+s.y1)/2,h,lx0:s.x0,lx1:lvEnd,cands:[],seg:null,segHidden:true};
+  if(!rest.length)return null;
+  const nx0=rest[0].x0;let nx1=rest[0].x1;
+  /* walk right over letters, underscores and dashes until a real gap (the avatar icon) */
+  const cand=s.all.filter(c=>band(c)&&c.x0>nx0).sort((a,b)=>a.x0-b.x0);
+  for(const c of cand){const flat=c.h<h*0.35&&c.w>h*0.2;if(c.x0-nx1>h*(flat?1.4:0.9))break;nx1=Math.max(nx1,c.x1)} /* _ and - get a longer reach */
+  /* OCR saw further than the blobs (letters merged into one blob): trust the OCR word extent */
+  const wEnd=ws.slice(1).filter(x=>toX(x.x0)-nx1<h*0.9).reduce((e,x)=>Math.max(e,toX(x.x1)),0);
+  if(nx1-nx0<h*1.5&&wEnd>nx1&&wEnd-nx1<h*4)nx1=wEnd;
+  const lvC=s.comps.filter(c=>c.x1<=lvEnd+h*0.1);
+  return {cy:(s.y0+s.y1)/2,h,lx0:lvC.length?Math.min(...lvC.map(c=>c.x0)):s.x0,lx1:nx0-h*0.3,cands:[],seg:{nx0,nx1,y0:s.y0,y1:s.y1,mk:src,lv:lvEnd},segHidden:hidden};
+}
+/* several reads of the tight name crop: plain mask, Otsu, and both with the italic lean removed */
+async function segCands(w,g,mk,r){
+  const S=r.seg,h=r.h,out=[];
+  const sx=Math.max(S.nx0-h*0.35,S.lv+h*0.05),sy=S.y0-h*0.3,sw=S.nx1-S.nx0+h*0.5,sh=S.y1-S.y0+h*0.65;
+  const k=Math.max(1,Math.min(5,70/(S.y1-S.y0)));
+  const sl=estSlant(mk,Math.max(0,sx),Math.max(0,sy),Math.min(mk.width-Math.max(0,sx),sw),Math.min(mk.height-Math.max(0,sy),sh));r.slant=sl;
+  const mk2=r.seg.mk||mk,vars=[[mk2,false,0],[g,true,0]];if(Math.abs(sl)>=0.05)vars.push([mk2,false,sl],[g,true,sl]);
+  for(const [src,bin,s] of vars){
+    const ws=await ocrWords(w,padCrop(src,sx,sy,sw,sh,k,bin,s));
+    if(!ws.length)continue;
+    const t=trimName(ws,h*k,ws[0].x0,false);
+    if(t&&alnumN(t.t)>=3&&!/\*/.test(t.t))out.push({t:t.t,c:t.c+8,seg:1});
+  }
+  return out;
+}
 $("go").onclick=async()=>{
   const m=$("msg");$("go").disabled=true;m.textContent="Loading OCR engine…";
   try{
@@ -289,25 +448,74 @@ $("go").onclick=async()=>{
     if(P.length>1){[r1,r2]=await Promise.all([P[0].recognize(img),P[P.length-1].recognize(mk)])}
     else{r1=await P[0].recognize(img);r2=await P[0].recognize(mk)}
     const [raw,raw2]=[r1,r2].map(x=>x.data.words||[]);
-    const rows=mergeRows([...rowsFrom(raw),...rowsFrom(raw2)]);
+    await setAll({tessedit_pageseg_mode:"7",tessedit_char_whitelist:WL+"*|"});
+    let srows=[],strictMk=null,colMk=null;
+    try{
+      m.textContent="Finding name rows…";
+      const ov=(o,q)=>{const ix=Math.min(o.x1,q.x1)-Math.max(o.x0,q.x0),iy=Math.min(o.y1,q.y1)-Math.max(o.y0,q.y0);return ix>0&&iy>0&&ix*iy>0.3*Math.min((o.x1-o.x0)*(o.y1-o.y0),(q.x1-q.x0)*(q.y1-q.y0))};
+      const runSegs=async segs=>{let si=0;await Promise.all(P.map(async x=>{while(si<segs.length){const s=segs[si++];try{const r=await segRow(x,img,mk,s);if(r){r.src=s;srows.push(r)}}catch(e){console.error(e)}}}))};
+      /* strict mask first (thinner strokes, letters separate cleanly), then the normal mask for anything it missed */
+      strictMk=whiteMaskAt(img,185);
+      await runSegs(textSegments(strictMk).sort((a,b)=>a.y0-b.y0).slice(0,40));
+      await runSegs(textSegments(mk).filter(q=>!srows.some(r=>ov(r.src,q))).sort((a,b)=>a.y0-b.y0).slice(0,40));
+      /* last look using colour: white letters on a coloured bar (e.g. the red top row) can blend into the art in grayscale */
+      if(imgC&&imgC.width){colMk=whiteMaskAt(imgC,185);
+        await runSegs(textSegments(colMk).filter(q=>!srows.some(r=>ov(r.src,q))).sort((a,b)=>a.y0-b.y0).slice(0,40));}
+      srows.forEach(r=>delete r.src);
+    }catch(e){console.error(e);srows=[]} /* any failure here just leaves the original row finder */
+    let rows=mergeRows([...srows.sort((a,b)=>a.cy-b.cy),...rowsFrom(raw),...rowsFrom(raw2)])
+      .filter((r,_,A)=>!A.some(q=>(q.seg||q.segHidden)&&q!==r&&Math.abs(q.cy-r.cy)<Math.max(q.h,r.h)*0.6&&r.lx0-q.lx0>Math.max(q.h,r.h)*3));
+    /* names line up down a (slanted) column; once the layout finder has found that column,
+       drop OCR-only rows that sit well off it (costume titles, art, map text) */
+    let anchor=rows.filter(r=>r.seg||r.segHidden);
+    const fit=A=>{const n=A.length,mx=A.reduce((a,r)=>a+r.cy,0)/n,my=A.reduce((a,r)=>a+r.lx0,0)/n,sxx=A.reduce((a,r)=>a+(r.cy-mx)**2,0);
+      return {mx,my,b:sxx?A.reduce((a,r)=>a+(r.cy-mx)*(r.lx0-my),0)/sxx:0,hm:A.reduce((a,r)=>a+r.h,0)/n}};
+    /* robust: pick the line through two anchors that the most other anchors agree with
+       (so a stray one, like the phone's battery %, can't tilt it), then refit on those */
+    if(anchor.length>=3){
+      const hm0=anchor.reduce((a,r)=>a+r.h,0)/anchor.length;let bestIn=null;
+      for(let i=0;i<anchor.length;i++)for(let j=i+1;j<anchor.length;j++){const A=anchor[i],B=anchor[j];if(Math.abs(A.cy-B.cy)<hm0)continue;
+        const k=(B.lx0-A.lx0)/(B.cy-A.cy),inl=anchor.filter(r=>Math.abs(r.lx0-(A.lx0+k*(r.cy-A.cy)))<hm0*2);
+        if(!bestIn||inl.length>bestIn.length)bestIn=inl}
+      if(bestIn&&bestIn.length>=3)anchor=bestIn;
+    }
+    if(anchor.length>=3){
+      const {mx,my,b,hm}=fit(anchor);
+      const lo=Math.min(...anchor.map(r=>r.cy)),hi=Math.max(...anchor.map(r=>r.cy)),reach=Math.max(hm*6,(hi-lo)/(anchor.length-1)*1.4); /* allow about one row past the ends */
+      for(let i=rows.length-1;i>=0;i--){const r=rows[i];if(r.seg||r.segHidden)continue;
+        const off=Math.abs(r.lx0-(my+b*(r.cy-mx)));
+        if(off>hm*2.5||r.cy<lo-reach||r.cy>hi+reach)rows.splice(i,1);}
+    }
     await setAll({tessedit_pageseg_mode:"7",tessedit_char_whitelist:WL});
     let next=0,done=0,hidden=0;const got=[],dbg=[];
     await Promise.all(P.map(async x=>{
       while(next<rows.length){
         const i=next++;
-        try{const o=await cropCands(x,img,mk,rows[i]);rows[i].cands.push(...o.c);rows[i].hidden=o.hidden}catch(e){console.error(e)}
+        const r=rows[i];
+        if(r.segHidden){r.hidden=true}
+        else{
+          try{const o=await cropCands(x,img,mk,r);r.cands.push(...o.c);r.hidden=o.hidden&&!r.seg}catch(e){console.error(e)} /* the layout finder saw real letters there, so it wins */
+          if(r.seg&&!r.hidden)try{r.cands.push(...await segCands(x,img,mk,r))}catch(e){console.error(e)}
+        }
         m.textContent="Checking names… "+(++done)+" of "+rows.length;
       }
     }));
+    const strict=rows.filter(r=>r.seg).length>=3;
     rows.forEach((r,i)=>{
       if(!r.hidden&&r.cands.some(c=>/\*{2,}/.test(c.t)))r.hidden=true;
       const b=!r.hidden&&r.cands.length&&chooseName(r.cands);
-      dbg.push("row "+(i+1)+": "+(r.hidden?"[hidden name]":r.cands.map(c=>c.t+" ("+Math.round(c.c)+")").join(" | ")));
+      dbg.push("row "+(i+1)+(r.seg?" [line]":"")+": "+(r.hidden?"[hidden name]":r.cands.map(c=>c.t+" ("+Math.round(c.c)+")").join(" | ")));
       if(r.hidden){hidden++;return}
       if(!b)return;
       if(/\*/.test(b.t)){hidden++;return}
-      if(alnumN(b.t)>=3&&(b.votes>=2||b.c>=60||alnumN(b.t)>=9)&&(alnumN(b.t)>3||b.votes>=2)&&!got.some(g=>keyOf(g.t)===keyOf(b.t)))
-        got.push({t:b.t,c:b.c,sc:b.s,adj:true,x0:0,y0:r.cy,s:1});
+      /* lines found by the layout finder whose own tight reads all failed are probably costume titles, not names */
+      if(r.seg&&!r.cands.some(c=>c.seg)&&b.votes<2)return;
+      /* when the layout finder worked, rows only the full-page pass saw must be read the same way at least twice */
+      const weak=!r.seg&&strict&&b.votes<2&&!(b.c>=80&&b.sup>=1.5&&alnumN(b.t)>=6); /* shown, but switched off */
+      {const k=keyOf(b.t);if(HKEY.has(k)||[...HKEY].some(h=>h.length>=8&&k.includes(h)&&k.length-h.length<=2))return} /* "BlackWidow" etc. from a costume title */
+      if(!/[A-Za-z]/.test(b.t)||/^(fantastic|uncanny|amazing|heroic|ignite|tide|control|destroy|enter)\b/i.test(b.t))return;
+      if(alnumN(b.t)>=3&&(b.votes>=2||b.c>=60||alnumN(b.t)>=9||(r.seg&&b.sup>=1.5))&&(alnumN(b.t)>3||b.votes>=2)&&!got.some(g=>keyOf(g.t)===keyOf(b.t)))
+        got.push({t:b.t.replace(/\s*([_-])\s*/g,"$1"),c:b.c,sc:b.s,adj:true,x0:0,y0:r.cy,s:weak?0:1});
     });
     let found=got;
     if(!found.length){m.textContent="Trying fallback…";await setAll({tessedit_pageseg_mode:"11",tessedit_char_whitelist:""});
@@ -315,6 +523,8 @@ $("go").onclick=async()=>{
       try{found=pickNames(r11)}catch(e){console.error(e)}
       if(!found.length)found=looseNames(r11);
       found.forEach((o,i)=>o.s=i<12?1:0)}
+    /* iPhone Safari caps total canvas memory: free the big mask canvases now that we're done with them */
+    for(const c of [mk,strictMk,colMk])if(c){c.width=c.height=0}
     $("dbg").textContent=dbg.join("\n")+"\n\nPASS 1 words: "+raw.map(o=>o.text).join(" ")+"\n\nPASS 2 words: "+raw2.map(o=>o.text).join(" ");
     cands=found.slice(0,16).sort((a,b)=>a.y0-b.y0);
     render();
