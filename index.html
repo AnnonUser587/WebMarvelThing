@@ -29,6 +29,14 @@ input{font:inherit;width:100%;padding:10px;border-radius:8px;border:1px solid va
 .sc{font-size:.8rem;color:var(--mut)}.tag{font-size:.7rem;background:var(--bd);border-radius:6px;padding:1px 6px;margin-left:6px}
 .hide{display:none}.gap{display:grid;gap:8px}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 pre{white-space:pre-wrap;word-break:break-all;font-size:.7rem;max-height:200px;overflow:auto;background:var(--bg);padding:8px;border-radius:8px}
+.opts{display:grid;gap:8px;margin-top:10px}
+.tg{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--bd);border-radius:10px;padding:10px;cursor:pointer}
+.tg input{width:20px;height:20px;margin:2px 0 0;flex:none;accent-color:var(--ac)}
+.tg small{color:var(--mut);font-size:.8rem;line-height:1.35;display:block}
+.tg.off{opacity:.6}
+.chip b.ok{color:var(--al);font-weight:700}.chip small{color:var(--mut);font-size:.72rem}
+.chip input.ced{margin:0;padding:2px 6px;width:12em;max-width:60vw;font-size:.9rem}
+.keyrow{display:grid;grid-template-columns:1fr auto;gap:8px}.keyrow button{width:auto}
 details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9rem}
 </style></head><body><main>
 <h1>Rivals Ban Helper</h1>
@@ -38,6 +46,15 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <h2>1 · Enemy team screenshot</h2>
 <label class="drop"><input type="file" id="file" accept="image/*"><span id="dropt">Tap to choose a screenshot or photo</span></label>
 <img id="pv" class="pv hide" alt="Preview">
+<div class="opts">
+<label class="tg" id="aiRow"><input type="checkbox" id="useai" checked><span><b>✨ AI reading</b><small id="aiNote">Checking…</small></span></label>
+<label class="tg"><input type="checkbox" id="fast"><span><b>⚡ Fast mode</b><small>Reads several rows at the same time. Uses more memory; turn it off if the page reloads during a scan.</small></span></label>
+</div>
+<details id="aiSetup" class="hide"><summary>AI reading setup</summary>
+<p class="s">AI reading sends the photo to Claude, which reads the names the way a person would, so it handles blur, the italic font and <b>_</b> / <b>-</b> far better than OCR. On this site it uses your own Anthropic API key (get one at console.anthropic.com). The key is saved only in this browser on this device, and each scan costs a small amount on your API account.</p>
+<div class="keyrow"><input id="key" type="password" placeholder="sk-ant-…" autocomplete="off"><button id="keysave">Save</button></div>
+<button class="g" id="keyforget">Forget key</button>
+</details>
 <div class="gap" style="margin-top:10px"><button id="go" disabled>Scan usernames</button></div>
 <p class="s" id="msg" style="margin:8px 0 0"></p><details><summary>Raw OCR output (for debugging)</summary><pre id="dbg"></pre></details>
 </section>
@@ -216,23 +233,45 @@ function simOf(a,b){
   for(let i=1;i<=m;i++){const q=[i];for(let j=1;j<=n;j++)q[j]=Math.min(p[j]+1,q[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:a[i-1].toLowerCase()===b[j-1].toLowerCase()?0.5:1));p=q}
   return 1-p[n]/Math.max(m,n);
 }
+/* tidy one reading: OCR adds spaces, stray 1-2 letter bits from the avatar/divider, and runs of _ from the bar's edge */
+function cleanName(t){
+  t=t.replace(/\s+/g," ").trim();
+  t=t.replace(/\s*([_.-])\s*/g,"$1");                     /* "Griffith _-1" -> "Griffith_-1" */
+  t=t.replace(/ (?=[a-z0-9])/g,"");                        /* "Q uisy" -> "Quisy", "Sea bass08" -> "Seabass08" (real two-word names start each word with a capital) */
+  while(/^\S{1,2} [A-Za-z]/.test(t)&&alnumN(t.replace(/^\S{1,2} /,""))>=4)t=t.replace(/^\S{1,2} /,""); /* "ia Seabass08", "HE Griffith" */
+  t=t.replace(/^(\S*[\d_]\S*) [a-z]{2,}$/,"$1");           /* "RUj123 rite" */
+  t=t.replace(/ \S{1,2}$/,m=>/[A-Z]/.test(m)&&m.length===3?m:"");   /* trailing 1-2 char junk, keep "TVA X" style capitals */
+  t=t.replace(/^[_.-]+|[_.-]+$/g,"");                      /* "Sin_Palabras_______" */
+  t=t.replace(/([_-])\1{1,}/g,"$1");
+  t=t.replace(/(\d)[-_][A-Z]{1,2}$/,"$1");                  /* "Rj123-W": the avatar icon read as letters */
+  return t;
+}
 function chooseName(c){
+  c=c.map(x=>({...x,t:cleanName(x.t)})).filter(x=>x.t);
+  if(!c.length)return null;
+  /* a reading with the first letter cut off ("itoStaySly") backs the full one ("NitoStaySly") */
+  const ext=(a,b)=>{const ka=keyOf(a),kb=keyOf(b);return kb.length>=4&&ka.length>kb.length&&ka.length-kb.length<=2&&ka.endsWith(kb)&&/^[a-z]+$/.test(ka.slice(0,ka.length-kb.length))};
   let best=null;
   for(const x of c){
     const votes=c.filter(y=>keyOf(y.t)===keyOf(x.t)).length;
     /* exact repeats count fully, close variants (one letter off) count partly */
     const sup=c.reduce((a,y)=>{const v=simOf(x.t,y.t);return a+(v>=0.99?1:v>=0.75?v*0.6:0)},0);
-    let s=Math.min(x.c,95)*0.6+28*(sup-1)+(x.seg?6:0);if(alnumN(x.t)<3)s-=100;
-    if(!best||s>best.s)best={s,t:x.t,c:x.c,sup,votes:Math.max(votes,Math.floor(sup+0.01))};
+    const sup2=sup+c.reduce((a,y)=>a+(y!==x&&ext(x.t,y.t)?0.8:0),0);
+    let s=Math.min(x.c,95)*0.6+28*(sup2-1)+(x.seg?6:0);if(alnumN(x.t)<3)s-=100;
+    if(c.some(y=>ext(y.t,x.t)))s-=12;                     /* something longer contains this one: it's probably clipped */
+    if(/^\d{2,3}[A-Z]/.test(x.t)&&c.some(y=>keyOf(x.t).includes(keyOf(y.t))&&!/^\d/.test(y.t)&&alnumN(y.t)>=4))s-=30; /* level number glued on: "28Nolanl757" */
+    if(!best||s>best.s)best={s,t:x.t,c:x.c,sup:sup2,votes:Math.max(votes,Math.floor(sup+0.01))};
   }
   return best;
 }
 const WL="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-";
 const POOL=[];
 async function getWorkers(){
-  if(POOL.length)return POOL;
-  const n=MOBILE?1:Math.min(2,Math.max(1,Math.floor((navigator.hardwareConcurrency||2)/2)));
-  POOL.push(...await Promise.all(Array.from({length:n},()=>Tesseract.createWorker("eng",1))));
+  /* Fast mode: several OCR engines read different rows at the same time */
+  const cores=navigator.hardwareConcurrency||2;
+  const n=$("fast").checked?Math.max(2,Math.min(MOBILE?3:4,cores-1)):(MOBILE?1:Math.min(2,Math.max(1,Math.floor(cores/2))));
+  while(POOL.length>n){const x=POOL.pop();try{x.terminate()}catch(e){}}
+  if(POOL.length<n)POOL.push(...await Promise.all(Array.from({length:n-POOL.length},()=>Tesseract.createWorker("eng",1))));
   return POOL;
 }
 /* hidden names show as ***** : stars only have ink in the upper part of the line, letters reach the baseline */
@@ -437,9 +476,9 @@ async function segCands(w,g,mk,r){
   }
   return out;
 }
-$("go").onclick=async()=>{
-  const m=$("msg");$("go").disabled=true;m.textContent="Loading OCR engine…";
-  try{
+async function ocrScan(m){
+  m.textContent="Loading OCR engine…";
+  {
     const P=await getWorkers(),w=P[0],setAll=o=>Promise.all(P.map(x=>x.setParameters(o)));
     await setAll({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1",tessedit_char_whitelist:""});
     const mk=whiteMask(img);
@@ -526,23 +565,140 @@ $("go").onclick=async()=>{
     /* iPhone Safari caps total canvas memory: free the big mask canvases now that we're done with them */
     for(const c of [mk,strictMk,colMk])if(c){c.width=c.height=0}
     $("dbg").textContent=dbg.join("\n")+"\n\nPASS 1 words: "+raw.map(o=>o.text).join(" ")+"\n\nPASS 2 words: "+raw2.map(o=>o.text).join(" ");
-    cands=found.slice(0,16).sort((a,b)=>a.y0-b.y0);
-    render();
-    m.textContent=cands.length?"Found "+cands.length+" name"+(cands.length>1?"s":"")+(hidden?" ("+hidden+" hidden by the game, can't be read)":"")+". Fix any misreads with ✎.":"Nothing readable found. Add names manually below.";
-  }catch(e){m.textContent="OCR failed: "+e.message+". Add names manually.";cands=[];render()}
-  $("go").disabled=false;
+    return {found:found.slice(0,16).sort((a,b)=>a.y0-b.y0),hidden};
+  }
+}
+/* ---------- AI reading ---------- */
+const AI_PROMPT=`You are reading player usernames from a phone photo of a TV screen showing the enemy team in the game Marvel Rivals. The photo may be skewed, blurry or show screen moiré.
+Image 1 is the whole photo. Images 2 and 3 are zoomed-in top and bottom parts of the SAME photo; they overlap, so a player can appear in more than one image. List each player once.
+
+Each player row reads left to right: a level number (1-3 digits), a thin divider, the USERNAME, a small round avatar icon, and on the far right sometimes a costume or title in coloured capitals or italics (e.g. "Fantastic Gambit", "TIDE RIVALS", "UNERRING AIM", "Legendary Deadpool"). Only the username matters: never include the level number, avatar, title, hero names or any other screen text.
+
+Some usernames are hidden by the game as asterisks plus one character (like "*****8"). Count those in "hidden" but do not list or guess them.
+
+Copy each username exactly, character for character: keep upper/lower case, digits, underscores (_), dashes (-) and dots (.). Usernames rarely contain spaces; only include one where there is a clear word gap. The font is narrow and italic, so look closely at l (lowercase L) vs I (capital i) vs 1, O (letter) vs 0 (zero), q vs g, rn vs m. Use the zoomed images for detail. If a character is still doubtful, give your best reading and put the doubtful character(s) in "unsure" (otherwise "").
+
+Reply with only JSON, top row first, like:
+{"players":[{"name":"Example_name-1","unsure":""}],"hidden":1}`;
+const KEYK="rbh_api_key";
+const getKey=()=>{try{return localStorage.getItem(KEYK)||""}catch(e){return ""}};
+let aiInfoP=null;
+function aiInfo(){
+  /* inside claude.ai the page can ask Claude directly; anywhere else it needs the user's API key */
+  if(!aiInfoP)aiInfoP=(async()=>{
+    try{if(window.claude&&typeof claude.use==="function"){const sm=await claude.use("sample");
+      if(sm){const l=await sm.limits().catch(()=>null);if(l&&l.images)return {kind:"claude",sm,max:l.images.maxCount||1}}}}catch(e){}
+    return {kind:"api"};
+  })();
+  return aiInfoP;
+}
+async function aiReady(){const i=await aiInfo();if(i.kind==="claude")return i;const k=getKey();return k?{kind:"api",key:k}:null}
+/* whole photo plus zoomed top and bottom halves, from the colour copy */
+async function aiImages(n){
+  const src=imgC&&imgC.width?imgC:img,W=src.width,H=src.height,h2=Math.round(H*0.56);
+  const parts=[[0,0,W,H],[0,0,W,h2],[0,H-h2,W,h2]].slice(0,Math.max(1,n));
+  return Promise.all(parts.map(([x,y,w,h])=>{const k=Math.min(1,1600/Math.max(w,h)),c=document.createElement("canvas");c.width=Math.round(w*k);c.height=Math.round(h*k);
+    c.getContext("2d").drawImage(src,x,y,w,h,0,0,c.width,c.height);
+    return new Promise((res,rej)=>c.toBlob(b=>{c.width=c.height=0;b?res(b):rej(new Error("could not prepare the photo"))},"image/jpeg",0.9))}));
+}
+const b64=b=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]);r.onerror=()=>rej(r.error);r.readAsDataURL(b)});
+function parseAI(v){
+  if(typeof v==="string"){const a=v.indexOf("{"),b=v.lastIndexOf("}");if(a<0||b<a)throw new Error("the AI reply wasn't readable");v=JSON.parse(v.slice(a,b+1))}
+  const seen=new Set(),names=[];
+  for(const p of (v&&Array.isArray(v.players)?v.players:[])){
+    const t=String(p&&p.name!=null?p.name:p||"").trim().replace(/\s+/g," ");
+    if(t.length<2||t.length>32||/\*/.test(t)||seen.has(keyOf(t)))continue;
+    seen.add(keyOf(t));names.push({t,unsure:String(p&&p.unsure||"").trim().slice(0,8)});
+  }
+  return {names,hidden:Math.max(0,Math.min(6,parseInt(v&&v.hidden)||0))};
+}
+async function aiScan(ai){
+  if(ai.kind==="claude"){
+    const imgs=await aiImages(Math.min(3,ai.max));
+    return parseAI(await ai.sm.json(imgs.length>1?AI_PROMPT:AI_PROMPT.replace(/Image 1 is the whole photo\.[^\n]*\n/,""),{images:imgs,modelTier:"default"}));
+  }
+  const imgs=await Promise.all((await aiImages(3)).map(b64)),content=[...imgs.map(d=>({type:"image",source:{type:"base64",media_type:"image/jpeg",data:d}})),{type:"text",text:AI_PROMPT}];
+  let last="no model available";
+  for(const model of ["claude-sonnet-5-5","claude-sonnet-4-5"]){
+    const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"x-api-key":ai.key,"anthropic-version":"2023-06-01","content-type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model,max_tokens:1500,messages:[{role:"user",content}]})});
+    const j=await r.json().catch(()=>({}));
+    if(r.ok)return parseAI((j.content||[]).filter(c=>c.type==="text").map(c=>c.text).join(""));
+    last=(j.error&&j.error.message)||("error "+r.status);
+    if(r.status===401)throw new Error("the API key was rejected");
+    if(r.status!==404&&!/model/i.test(last))throw new Error(last); /* only an unknown model moves on to the next one */
+  }
+  throw new Error(last);
+}
+const aiErrText=e=>({not_granted:"not allowed",rate_limited:"usage limit reached, try again later",image_rejected:"photo not accepted",sampling_disabled:"not available on this account",session_expired:"sign in again",refused:"declined",invalid_json:"reply wasn't readable"})[e&&e.code]||(e&&e.message)||"unknown error";
+/* ---------- run AI and OCR at the same time, show whichever finishes first ---------- */
+let scanId=0,res={};const touched=new Map();
+function merge(){
+  const keep=cands.filter(o=>o.user);let auto=[];
+  if(res.ai&&res.ai.names.length){
+    auto=res.ai.names.map((n,i)=>({t:n.t,s:1,ai:1,unsure:n.unsure,y0:i}));
+    for(const o of (res.ocr?res.ocr.found:[])){
+      const hit=auto.find(a=>keyOf(a.t)===keyOf(o.t));
+      if(hit)hit.agree=1;else if(o.s&&!auto.some(a=>simOf(a.t,o.t)>=0.6))auto.push({t:o.t,s:0,ocrOnly:1,y0:99});
+    }
+  }else if(res.ocr)auto=res.ocr.found.map(o=>({...o}));
+  for(const a of auto){const k=keyOf(a.t);if(touched.has(k))a.s=touched.get(k)}
+  cands=[...keep,...auto.filter(a=>!keep.some(k=>keyOf(k.t)===keyOf(a.t)))];
+  render();
+}
+function finalMsg(){
+  const on=cands.filter(o=>o.s).length,useAI=!!res.ai&&res.ai.names.length>0;
+  const hidden=useAI?res.ai.hidden:res.ocr?res.ocr.hidden:0,agree=cands.filter(o=>o.agree).length;
+  let t=on?"Found "+on+" name"+(on>1?"s":"")+(hidden?" ("+hidden+" hidden by the game, can't be read)":""):"Nothing readable found. Add names manually below.";
+  if(useAI)t+=". Read by AI"+(agree?"; ✓ = OCR read it the same way":"");
+  else if(res.aiErr)t+=". AI reading failed ("+aiErrText(res.aiErr)+"), so these are OCR results";
+  if(!res.ocr&&!useAI)t+=". OCR failed"+(res.ocrErr&&res.ocrErr.message?": "+res.ocrErr.message:"");
+  $("msg").textContent=t+(on?". Check them before confirming; fix any misreads with ✎.":"");
+}
+$("go").onclick=async()=>{
+  const id=++scanId;$("go").disabled=true;res={};touched.clear();cands=cands.filter(o=>o.user);
+  const st={ai:"",ocr:""},show=()=>{if(id===scanId)$("msg").textContent=[st.ai,st.ocr].filter(Boolean).join(" · ")};
+  const ai=$("useai").checked?await aiReady().catch(()=>null):null,jobs=[];
+  if(ai){st.ai="✨ AI reading the photo…";
+    jobs.push(aiScan(ai).then(r=>{if(id===scanId)res.ai=r;st.ai=r.names.length?"✨ AI names ready below (you can confirm now)":""},e=>{console.error(e);if(id===scanId)res.aiErr=e;st.ai=""}).finally(()=>{if(id===scanId){merge();show()}}));}
+  const m={set textContent(v){st.ocr=(ai?"OCR: ":"")+v;show()}};
+  jobs.push(ocrScan(m).then(r=>{if(id===scanId)res.ocr=r;st.ocr=""},e=>{console.error(e);if(id===scanId)res.ocrErr=e;st.ocr=""}).finally(()=>{if(id===scanId){merge();show()}}));
+  show();
+  await Promise.all(jobs);
+  if(id===scanId){merge();finalMsg();$("go").disabled=false}
 };
+/* ---------- settings ---------- */
+const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}},lsSet=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}};
+$("fast").checked=lsGet("rbh_fast")==="1";$("fast").onchange=()=>lsSet("rbh_fast",$("fast").checked?"1":"0");
+$("useai").checked=lsGet("rbh_ai")!=="0";$("useai").onchange=()=>lsSet("rbh_ai",$("useai").checked?"1":"0");
+async function aiUI(){
+  const i=await aiInfo(),row=$("aiRow"),note=$("aiNote"),box=$("useai");
+  if(i.kind==="claude"){$("aiSetup").classList.add("hide");box.disabled=false;row.classList.remove("off");note.textContent="Claude reads the names from your photo, using your Claude account (you'll be asked to allow it once). Much more accurate than OCR alone; OCR runs alongside to double-check.";return}
+  $("aiSetup").classList.remove("hide");
+  if(getKey()){box.disabled=false;row.classList.remove("off");note.textContent="Claude reads the names using your API key. Much more accurate than OCR alone; OCR runs alongside to double-check.";$("key").placeholder="Key saved ✓ (paste a new one to replace)"}
+  else{box.disabled=true;row.classList.add("off");note.textContent="Off: add an Anthropic API key in “AI reading setup” below to turn it on.";$("key").placeholder="sk-ant-…"}
+}
+$("keysave").onclick=()=>{const k=$("key").value.trim();if(!k)return;lsSet(KEYK,k);$("key").value="";$("useai").checked=true;lsSet("rbh_ai","1");aiUI()};
+$("keyforget").onclick=()=>{lsSet(KEYK,null);$("key").value="";aiUI()};
+aiUI();
 function render(){
   $("s2").classList.remove("hide");
   $("chips").innerHTML="";
   cands.forEach(o=>{
     const d=document.createElement("span");d.className="chip c"+(o.s?1:0);
-    d.innerHTML=`${esc(o.t)} <i>✎</i>`;
-    d.onclick=e=>{if(e.target.tagName==="I"){const n=prompt("Fix username:",o.t);if(n&&n.trim())o.t=n.trim()}else o.s=o.s?0:1;render()};
+    d.innerHTML=`${esc(o.t)}${o.agree?' <b class="ok" title="AI and OCR read it the same way">✓</b>':""}${o.unsure?` <small>check ${esc(o.unsure)}</small>`:""}${o.ocrOnly?" <small>OCR only</small>":""} <i>✎</i>`;
+    d.onclick=e=>{
+      if(e.target.tagName!=="I"){o.s=o.s?0:1;touched.set(keyOf(o.t),o.s);render();return}
+      /* edit in place (pop-up prompts don't work everywhere) */
+      const inp=document.createElement("input");inp.className="ced";inp.value=o.t;inp.setAttribute("autocapitalize","off");inp.setAttribute("autocorrect","off");inp.spellcheck=false;
+      d.replaceChildren(inp);d.onclick=ev=>ev.stopPropagation();inp.focus();inp.select();
+      let done=false;const save=ok=>{if(done)return;done=true;const n=inp.value.trim();if(ok&&n&&n!==o.t){o.t=n;o.user=1;o.unsure="";o.agree=0;o.s=1}render()};
+      inp.onkeydown=ev=>{if(ev.key==="Enter")save(true);else if(ev.key==="Escape")save(false)};inp.onblur=()=>save(true);
+    };
     $("chips").appendChild(d);
   });
 }
-const add=()=>{const n=$("mn").value.trim();if(!n)return;cands.unshift({t:n,s:1,c:100});$("mn").value="";render()};
+const add=()=>{const n=$("mn").value.trim();if(!n)return;cands.unshift({t:n,s:1,c:100,user:1});$("mn").value="";render()};
 $("ma").onclick=add;
 
 /* ---------- Players ---------- */
