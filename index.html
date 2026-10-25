@@ -277,12 +277,18 @@ function mergeRows(rows){
 }
 const keyOf=t=>t.toLowerCase().replace(/\W/g,"");
 const HKEY=new Set(HL.map(keyOf));
-const TITLEW=["fantastic","uncanny","amazing","heroic","legendary","ignite","tide","rivals","unerring","aim","spark","of","life","bane","all","evil","fishing","expert","queenslayer","wild","imagination","wrath","asgard","chomp","ion","striker","galacta","galactas","favorite","giant","sized","brain","seeing","oracle","control","destroy","enter","attack","defend","the","convoy","tablet","transport","vault","stop","faith","harvesting","engine","krakoa","dracula","castle","final","ritual","loki","yggdrasill","tapping","device","black","widow","ally","white","fox","gambit","mantis","deadpool","groot","namor","magik","warlock","doctor","strange","adam"];
+const TITLEW=["fantastic","uncanny","amazing","heroic","legendary","ignite","tide","rivals","unerring","aim","spark","of","life","bane","all","evil","fishing","expert","queenslayer","wild","imagination","wrath","asgard","chomp","ion","striker","galacta","galactas","favorite","giant","sized","brain","seeing","oracle","control","destroy","enter","attack","defend","the","convoy","tablet","transport","vault","stop","faith","harvesting","engine","krakoa","dracula","castle","final","ritual","loki","yggdrasill","jeff","land","shark","midnight","mercenary","knull","essence","going","underground","iron","fist","awaken","shou","lao","tablet","use","to","infiltrate","tapping","device","black","widow","ally","white","fox","gambit","mantis","deadpool","groot","namor","magik","warlock","doctor","strange","adam"];
 /* true when the text is just costume/title words run together ("TIDERIVALS", "SPARKOFLIFE") */
 function isTitle(t){const k=t.toLowerCase().replace(/[^a-z]/g,"");if(k.length<4||/\d/.test(t))return false;
   const ok=new Array(k.length+1).fill(false);ok[0]=true;
   for(let i=0;i<k.length;i++)if(ok[i])for(const w of TITLEW)if(k.startsWith(w,i))ok[i+w.length]=true;
-  return ok[k.length];}
+  if(ok[k.length])return true;
+  /* cut-off pieces: "andShark" (Land Shark), "ticMagik" (Fantastic Magik), "BlackWi" */
+  for(const w of TITLEW)for(let j=1;j<=w.length-3;j++){const tail=w.slice(j);if(!k.startsWith(tail))continue;
+    const r=k.slice(tail.length);if(!r)continue;const ok2=new Array(r.length+1).fill(false);ok2[0]=true;
+    for(let i=0;i<r.length;i++)if(ok2[i])for(const v of TITLEW){if(r.startsWith(v,i))ok2[i+v.length]=true;else if(r.length-i>=3&&v.startsWith(r.slice(i)))ok2[r.length]=true}
+    if(ok2[r.length])return true}
+  return false;}
 /* similarity 0..1 from edit distance, used so near-identical reads support each other */
 function simOf(a,b){
   a=a.replace(/\s+/g,"");b=b.replace(/\s+/g,"");if(a===b)return 1;
@@ -295,11 +301,11 @@ function simOf(a,b){
 function cleanName(t){
   t=t.replace(/\s+/g," ").trim();
   t=t.replace(/\s*([_.-])\s*/g,"$1");                     /* "Griffith _-1" -> "Griffith_-1" */
-  t=t.replace(/ (?=[a-z0-9])/g,"");                        /* "Q uisy" -> "Quisy", "Sea bass08" -> "Seabass08" (real two-word names start each word with a capital) */
+  t=t.replace(/(^|\s)(\S) (?=[a-z0-9])/g,"$1$2");             /* "Q uisy" -> "Quisy"; other spaces ("Ace is nothing") are kept and the readings vote on them */
   while(/^\S{1,2} [A-Za-z]/.test(t)&&alnumN(t.replace(/^\S{1,2} /,""))>=4)t=t.replace(/^\S{1,2} /,""); /* "ia Seabass08", "HE Griffith" */
   t=t.replace(/^(\S*[\d_]\S*) [a-z]{2,}$/,"$1");           /* "RUj123 rite" */
   t=t.replace(/ \S{1,2}$/,m=>/[A-Z]/.test(m)&&m.length===3?m:"");   /* trailing 1-2 char junk, keep "TVA X" style capitals */
-  t=t.replace(/^[_.'-]+|[_.'-]+$/g,"");
+  t=t.replace(/^[_.'-]{2,}|[_.'-]{2,}$/g,"").replace(/^['.]+|['.]+$/g,"");
   t=t.replace(/'(?![A-Za-z])/g,"").replace(/(^|[^A-Za-z])'/g,"$1");  /* keep ' only between letters */                      /* "Sin_Palabras_______" */
   t=t.replace(/([_-])\1{1,}/g,"$1");
   t=t.replace(/(\d)[-_][A-Z]{1,2}$/,"$1");                  /* "Rj123-W": the avatar icon read as letters */
@@ -313,6 +319,7 @@ function chooseName(c){
   if(!c.length)return null;
   const dk=t=>t.replace(/\s+/g,"").toLowerCase(),w=y=>Math.max(0.3,Math.min(100,y.c)/100)*(y.pd?1.5:1)*(y.alt?0:1);
   const ext=(a,b)=>{const ka=keyOf(a),kb=keyOf(b);return kb.length>=4&&ka.length>kb.length&&ka.length-kb.length<=2&&ka.endsWith(kb)&&/^[a-z]+$/.test(ka.slice(0,ka.length-kb.length))};
+  const cut=(a,b)=>{const ka=keyOf(a),kb=keyOf(b);return kb.length>=5&&ka.length-kb.length>=2&&ka.startsWith(kb)};
   const uniq=[...new Map(c.map(x=>[dk(x.t),x])).values()];
   let best=null;
   for(const x of uniq){
@@ -321,9 +328,11 @@ function chooseName(c){
       if(dk(y.t)===dk(x.t)){s+=w(y);sup+=1;continue}
       if(skel(y.t)===skel(x.t)){s+=w(y)*0.7;sup+=0.6;continue}   /* same letters, different _ - . or case */
       if(ext(x.t,y.t)){s+=w(y)*0.8;sup+=0.6;continue}             /* a reading with the first letter clipped */
+      if(cut(x.t,y.t)){s+=w(y)*0.6;sup+=0.4;continue}             /* a reading with the end clipped ("Ako_si_pang") */
       const v=simOf(x.t,y.t);if(v>=0.7){s+=w(y)*v*v*v;sup+=v*0.6}
     }
     if(c.some(y=>ext(y.t,x.t)))s*=0.85;
+    if(c.some(y=>!y.pd&&y.c>=60&&cut(y.t,x.t)))s*=0.8;
     if(/^\d{2,3}[A-Z]/.test(x.t)&&c.some(y=>keyOf(x.t).includes(keyOf(y.t))&&!/^\d/.test(y.t)&&alnumN(y.t)>=4))s*=0.5; /* level glued on */
     if(alnumN(x.t)<3)s-=5;
     const ex=c.filter(y=>dk(y.t)===dk(x.t));
@@ -627,7 +636,8 @@ function pName(rd,hgt,hasLevel){
 }
 async function paddleCands(P,r,ang0){
   const src=imgC&&imgC.width?imgC:img,h=r.h,cy=r.seg?(r.seg.y0+r.seg.y1)/2:r.cy,out=[],ang=window.__noTilt?0:(r.seg&&r.seg.ang)||ang0||0;
-  const x0=r.lx0-h*0.5,x1=r.seg?Math.max(r.seg.nx1+h*(window.__CM||1.6),r.lx1+h*(window.__CW||8)):r.lx1+h*22; /* wide: the avatar gap ends the name, so a short estimate can't clip it */ /* generous: the avatar gap ends the name */
+  const tl=r.cands.filter(c=>!c.pd&&c.c>=50).reduce((m,c)=>Math.max(m,c.t.replace(/\s/g,"").length),0);
+  const x0=r.lx0-h*0.5,x1=Math.max(r.lx1+h*(0.62*tl+1.4),r.seg?Math.max(r.seg.nx1+h*(window.__CM||1.6),r.lx1+h*(window.__CW||8)):r.lx1+h*22); /* wide: the avatar gap ends the name, so a short estimate can't clip it */ /* generous: the avatar gap ends the name */
   for(const [vp,s,dy] of [[0.95,src,0],[1.3,src,0],[0.95,img,0],[0.95,src,0.3]]){ /* the last one sits lower so underscores aren't cut off */
     const rd=await pRead(P,s,x0,cy-h*vp+h*dy,x1-x0,h*vp*2,Math.abs(ang)>0.008?ang:0),n=pName(rd,h,true);
     if(!n)continue;
