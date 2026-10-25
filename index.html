@@ -34,6 +34,11 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:.7rem;max-height:200px;o
 .tg input{width:20px;height:20px;margin:2px 0 0;flex:none;accent-color:var(--ac)}
 .tg small{color:var(--mut);font-size:.8rem;line-height:1.35;display:block}
 .tg.off{opacity:.6}
+.cf{font-size:.7rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;border-radius:99px;padding:1px 7px;white-space:nowrap}
+.cf.hi{color:var(--al);background:color-mix(in srgb,var(--al) 16%,transparent)}
+.cf.md{color:#b7791f;background:color-mix(in srgb,#d69e2e 18%,transparent)}
+.cf.lo{color:var(--en);background:color-mix(in srgb,var(--en) 14%,transparent)}
+.nm{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .chip b.ok{color:var(--al);font-weight:700}.chip small{color:var(--mut);font-size:.72rem}
 .chip input.ced{margin:0;padding:2px 6px;width:12em;max-width:60vw;font-size:.9rem}
 .prog{margin-top:10px;display:grid;gap:6px}
@@ -50,9 +55,7 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 <h2>1 · Enemy team screenshot</h2>
 <label class="drop"><input type="file" id="file" accept="image/*"><span id="dropt">Tap to choose a screenshot or photo</span></label>
 <img id="pv" class="pv hide" alt="Preview">
-<div class="opts">
-<label class="tg"><input type="checkbox" id="fast"><span><b>⚡ Fast mode</b><small>Reads several rows at the same time. Uses more memory; turn it off if the page reloads during a scan.</small></span></label>
-</div>
+
 <div class="gap" style="margin-top:10px"><button id="go" disabled>Scan usernames</button></div>
 <div class="prog hide" id="prog" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="bar"><i id="pbar"></i></div><div class="lb"><span id="pstep"></span><span id="ppct">0%</span></div></div>
 <p class="s" id="msg" style="margin:8px 0 0"></p><details><summary>Raw OCR output (for debugging)</summary><pre id="dbg"></pre></details>
@@ -60,7 +63,7 @@ details{margin:6px 0 10px}summary{cursor:pointer;color:var(--mut);font-size:.9re
 
 <section class="card hide" id="s2">
 <h2>2 · Confirm enemy usernames</h2>
-<p class="s">Tap a name to turn it on or off. Tap ✎ to fix a misread (check <b>_</b> and <b>-</b>). Add anything it missed below.</p>
+<p class="s">Most likely correct first. <b>Sure</b> = very likely right, <b>Likely</b> = probably right, <b>Check</b> = compare with your photo before using. Tap a name to turn it on or off, tap ✎ to fix a misread (check <b>_</b> and <b>-</b>), and add anything it missed below.</p>
 <div id="chips"></div>
 <div class="two"><input id="mn" placeholder="Add a name"><button class="g" id="ma">+ Add</button></div>
 <div class="gap"><button id="confirm">Confirm &amp; open profiles</button></div>
@@ -82,14 +85,64 @@ let img=null,imgC=null,cands=[],players=[];
 const MOBILE=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.maxTouchPoints>1&&/Mac/.test(navigator.platform));
 const prof=n=>"https://tracker.gg/marvel-rivals/profile/ign/"+encodeURIComponent(n)+"/overview";
 /* ---------- OCR (whole image, usernames only) ---------- */
+/* stretch brightness so the brightest text is white again (phone photos of a TV come out dim and grey) */
+function autoLevels(x,w,h){
+  const d=x.getImageData(0,0,w,h),p=d.data,hist=new Uint32Array(256),step=Math.max(1,Math.floor(p.length/4/400000))*4;let n=0;
+  for(let i=0;i<p.length;i+=step){hist[Math.max(p[i],p[i+1],p[i+2])]++;n++}
+  let lo=0,hi=255,a=0;for(let v=0;v<256;v++){a+=hist[v];if(a>=n*0.01){lo=v;break}}
+  a=0;for(let v=255;v>=0;v--){a+=hist[v];if(a>=n*0.004){hi=v;break}}
+  if(hi-lo<40||hi>=225)return; /* whites are already white: leave sharp, bright photos alone */
+  const sc=255/(hi-lo);
+  for(let i=0;i<p.length;i+=4){p[i]=(p[i]-lo)*sc;p[i+1]=(p[i+1]-lo)*sc;p[i+2]=(p[i+2]-lo)*sc}
+  x.putImageData(d,0,0);
+}
+/* average difference between each pixel and its 3x3 neighbourhood: high only when the photo shows the TV's pixel grid */
+function moireLevel(d,w,h){
+  let sum=0,n=0;const L=i=>0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+  for(let y=1;y<h-1;y+=3)for(let x=1;x<w-1;x+=3){const i=(y*w+x)*4;let a=0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)a+=L(i+(dy*w+dx)*4);
+    sum+=Math.abs(L(i)-a/9);n++}
+  return n?sum/n:0;
+}
+/* separable box blur (radius r, repeated passes ~ gaussian) on RGBA data, in place */
+function boxBlur(d,w,h,r,passes){
+  const n=w*h,tmp=new Uint8ClampedArray(d.length),win=2*r+1;
+  for(let p=0;p<passes;p++){
+    for(let y=0;y<h;y++){const ro=y*w*4;for(let ch=0;ch<3;ch++){let acc=0;
+      for(let x=-r;x<=r;x++)acc+=d[ro+Math.min(w-1,Math.max(0,x))*4+ch];
+      for(let x=0;x<w;x++){tmp[ro+x*4+ch]=acc/win;acc+=d[ro+Math.min(w-1,x+r+1)*4+ch]-d[ro+Math.max(0,x-r)*4+ch]}}}
+    for(let x=0;x<w;x++){for(let ch=0;ch<3;ch++){let acc=0;
+      for(let y=-r;y<=r;y++)acc+=tmp[Math.min(h-1,Math.max(0,y))*w*4+x*4+ch];
+      for(let y=0;y<h;y++){d[y*w*4+x*4+ch]=acc/win;acc+=tmp[Math.min(h-1,y+r+1)*w*4+x*4+ch]-tmp[Math.max(0,y-r)*w*4+x*4+ch]}}}
+  }
+}
 $("file").onchange=async e=>{
   const f=e.target.files[0];if(!f)return;
-  const bm=await createImageBitmap(f);let k=Math.min(2.5,Math.max(1,2400/bm.width));
-  if(MOBILE)k=Math.min(k,Math.sqrt(7.5e6/(bm.width*bm.height))); /* keep phones under ~7.5 megapixels so the tab doesn't run out of memory */
-  const c=document.createElement("canvas");c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);
-  const x=c.getContext("2d");x.drawImage(bm,0,0,c.width,c.height);if(bm.close)bm.close();
+  const bm=await createImageBitmap(f);
+  /* A camera photo of a TV carries the screen's pixel grid and moiré, which both OCR engines misread as letter strokes.
+     Shrinking the photo in gentle halving steps averages that pattern away; it is then enlarged back to working size. */
+  let src=bm,sw=bm.width,sh=bm.height;const TW=window.__PRE||1000,BW=1600;
+  if(sw>BW*1.4&&!window.__noMoire){
+    /* halve to about 1600px wide and measure fine texture; only a real screen grid (moiré) gets smoothed, so sharp photos are read exactly as before */
+    let t=src,tw=sw,th=sh;
+    while(tw>BW*1.4){const nw=Math.round(tw/2),nh=Math.round(th/2),c2=document.createElement("canvas");c2.width=nw;c2.height=nh;
+      const cx2=c2.getContext("2d");cx2.imageSmoothingEnabled=true;cx2.imageSmoothingQuality="high";cx2.drawImage(t,0,0,nw,nh);
+      if(t!==bm)t.width=t.height=0;t=c2;tw=nw;th=nh}
+    const tx=t.getContext("2d",{willReadFrequently:true}),id=tx.getImageData(0,0,tw,th);
+    if(moireLevel(id.data,tw,th)>=(window.__MT||6)){
+      boxBlur(id.data,tw,th,1,2);tx.putImageData(id,0,0);src=t;sw=tw;sh=th;
+      while(sw>TW*1.15){const nw=Math.max(TW,Math.round(sw/2)),nh=Math.round(sh*nw/sw),c3=document.createElement("canvas");c3.width=nw;c3.height=nh;
+        const cx3=c3.getContext("2d");cx3.imageSmoothingEnabled=true;cx3.imageSmoothingQuality="high";cx3.drawImage(src,0,0,nw,nh);
+        src.width=src.height=0;src=c3;sw=nw;sh=nh}
+    }else t.width=t.height=0;
+  }
+  let k=Math.min(2.5,Math.max(1,2400/sw));
+  if(MOBILE)k=Math.min(k,Math.sqrt(7.5e6/(sw*sh))); /* keep phones under ~7.5 megapixels so the tab doesn't run out of memory */
+  const c=document.createElement("canvas");c.width=Math.round(sw*k);c.height=Math.round(sh*k);
+  const x=c.getContext("2d");if(src!==bm)x.imageSmoothingQuality="high";x.drawImage(src,0,0,c.width,c.height); /* photos that needed no shrinking are enlarged exactly as before */if(src!==bm)src.width=src.height=0;if(bm.close)bm.close();
   /* iPhone browsers ignore ctx.filter, so grayscale + contrast is done pixel by pixel */
   /* colour copy kept only for finding white name text (grayscale can't tell white letters from bright coloured art) */
+  if(!window.__noLevels)try{autoLevels(x,c.width,c.height)}catch(e){console.error(e)}
   try{if(imgC)imgC.width=imgC.height=0;imgC=document.createElement("canvas");imgC.width=c.width;imgC.height=c.height;imgC.getContext("2d").drawImage(c,0,0)}catch(e){imgC=null}
   const dd=x.getImageData(0,0,c.width,c.height),pp=dd.data;
   for(let i=0;i<pp.length;i+=4){let v=0.2126*pp[i]+0.7152*pp[i+1]+0.0722*pp[i+2];v=(v-127.5)*1.5+127.5;pp[i]=pp[i+1]=pp[i+2]=v<0?0:v>255?255:v}
@@ -224,6 +277,12 @@ function mergeRows(rows){
 }
 const keyOf=t=>t.toLowerCase().replace(/\W/g,"");
 const HKEY=new Set(HL.map(keyOf));
+const TITLEW=["fantastic","uncanny","amazing","heroic","legendary","ignite","tide","rivals","unerring","aim","spark","of","life","bane","all","evil","fishing","expert","queenslayer","wild","imagination","wrath","asgard","chomp","ion","striker","galacta","galactas","favorite","giant","sized","brain","seeing","oracle","control","destroy","enter","attack","defend","the","convoy","tablet","transport","vault","stop","faith","harvesting","engine","krakoa","dracula","castle","final","ritual","loki","yggdrasill","tapping","device","black","widow","ally","white","fox","gambit","mantis","deadpool","groot","namor","magik","warlock","doctor","strange","adam"];
+/* true when the text is just costume/title words run together ("TIDERIVALS", "SPARKOFLIFE") */
+function isTitle(t){const k=t.toLowerCase().replace(/[^a-z]/g,"");if(k.length<4||/\d/.test(t))return false;
+  const ok=new Array(k.length+1).fill(false);ok[0]=true;
+  for(let i=0;i<k.length;i++)if(ok[i])for(const w of TITLEW)if(k.startsWith(w,i))ok[i+w.length]=true;
+  return ok[k.length];}
 /* similarity 0..1 from edit distance, used so near-identical reads support each other */
 function simOf(a,b){
   a=a.replace(/\s+/g,"");b=b.replace(/\s+/g,"");if(a===b)return 1;
@@ -240,7 +299,8 @@ function cleanName(t){
   while(/^\S{1,2} [A-Za-z]/.test(t)&&alnumN(t.replace(/^\S{1,2} /,""))>=4)t=t.replace(/^\S{1,2} /,""); /* "ia Seabass08", "HE Griffith" */
   t=t.replace(/^(\S*[\d_]\S*) [a-z]{2,}$/,"$1");           /* "RUj123 rite" */
   t=t.replace(/ \S{1,2}$/,m=>/[A-Z]/.test(m)&&m.length===3?m:"");   /* trailing 1-2 char junk, keep "TVA X" style capitals */
-  t=t.replace(/^[_.-]+|[_.-]+$/g,"");                      /* "Sin_Palabras_______" */
+  t=t.replace(/^[_.'-]+|[_.'-]+$/g,"");
+  t=t.replace(/'(?![A-Za-z])/g,"").replace(/(^|[^A-Za-z])'/g,"$1");  /* keep ' only between letters */                      /* "Sin_Palabras_______" */
   t=t.replace(/([_-])\1{1,}/g,"$1");
   t=t.replace(/(\d)[-_][A-Z]{1,2}$/,"$1");                  /* "Rj123-W": the avatar icon read as letters */
   return t;
@@ -272,6 +332,12 @@ function chooseName(c){
   {const ex=c.filter(y=>y.t.replace(/\s/g,"").toLowerCase()===best.t.replace(/\s/g,"").toLowerCase()),cw=new Map();
    for(const y of ex)cw.set(y.t,(cw.get(y.t)||0)+w(y)*(y.pd?0.5:1));
    if(cw.size>1)best.t=[...cw].sort((a,b)=>b[1]-a[1])[0][0];}
+  {const tot=c.reduce((a,y)=>a+w(y),0)||1,k=best.t.replace(/\s/g,"").toLowerCase(),sk=skel(best.t);
+   const ex=c.filter(y=>y.t.replace(/\s/g,"").toLowerCase()===k),near=c.filter(y=>skel(y.t)===sk);
+   const share=(ex.reduce((a,y)=>a+w(y),0)+0.5*near.filter(y=>!ex.includes(y)).reduce((a,y)=>a+w(y),0))/tot;
+   const both=near.some(y=>y.pd)&&near.some(y=>!y.pd);
+   best.conf=Math.round(Math.min(99,100*share*0.8+(both?20:0)+Math.min(10,near.length*2)));best.both=both;
+   const an=alnumN(best.t);if(an<=3)best.conf=Math.min(best.conf,40);else if(an===4)best.conf=Math.min(best.conf,70);} /* very short reads are usually clipped fragments ("ach" of "Maybach") */
   /* the second engine is weak at _ - . : when Tesseract clearly read the same letters with punctuation, use that pattern */
   const tp=c.filter(y=>!y.pd&&skel(y.t)===skel(best.t)&&y.t.replace(/\s/g,"")!==best.t.replace(/\s/g,""));
   if(tp.length){const cnt=new Map();for(const y of tp){const k=y.t.replace(/\s/g,"");cnt.set(k,(cnt.get(k)||0)+w(y))}
@@ -294,9 +360,9 @@ function prog(f,step){
 }
 const stage=(a,b,step)=>{pSpan=[a,b];prog(a,step)};
 async function getWorkers(){
-  /* Fast mode: several OCR engines read different rows at the same time */
+  /* phones use one OCR engine (memory); computers use two side by side */
   const cores=navigator.hardwareConcurrency||2;
-  const n=$("fast").checked?Math.max(2,Math.min(MOBILE?3:4,cores-1)):(MOBILE?1:Math.min(2,Math.max(1,Math.floor(cores/2))));
+  const n=MOBILE?1:Math.min(2,Math.max(1,Math.floor(cores/2)));
   while(POOL.length>n){const x=POOL.pop();try{x.terminate()}catch(e){}}
   if(POOL.length<n)POOL.push(...await Promise.all(Array.from({length:n-POOL.length},()=>Tesseract.createWorker("eng",1,{logger:m=>{if(pLog)pLog(m)}}))));
   return POOL;
@@ -508,7 +574,7 @@ function getPaddle(){
     const [sess,txt]=await Promise.all([ort.InferenceSession.create(PMOD+"ch_PP-OCRv4_rec_infer.onnx",{executionProviders:["wasm"]}),
       fetch(PMOD+"ppocr_keys_v1.txt").then(r=>{if(!r.ok)throw new Error("dictionary "+r.status);return r.text()})]);
     const keys=txt.split(/\r?\n/);if(keys[keys.length-1]==="")keys.pop();keys.push(" ");
-    const okc=new Set((WL+"* ").split("")),allow=[0];
+    const okc=new Set((WL+"*' ").split("")),allow=[0];
     keys.forEach((k,i)=>{if(okc.has(k))allow.push(i+1)});  /* only letters, digits, _ - . * and space may come out */
     return {sess,keys,allow,inp:sess.inputNames[0],out:sess.outputNames[0]};
   })().catch(e=>{console.error("Paddle unavailable",e);paddleP=null;return null});
@@ -547,8 +613,11 @@ function pName(rd,hgt,hasLevel){
     if(cs.length>2&&/[|!iIl1]/.test(cs[0].c)&&/[A-Z]/.test(cs[1].c))cs=cs.slice(1); /* the thin divider after the level read as "i": "iQuisy" */
   }
   const out=[];
+  /* the avatar icon leaves a gap much wider than the name's own letter spacing */
+  const dts=[];for(let i=1;i<cs.length;i++)dts.push((cs[i].t-cs[i-1].t)*rd.px);dts.sort((a,b)=>a-b);
+  const thr=window.__GAPOLD?hgt*1.9:Math.max(hgt*(window.__GAP||1.9),(dts[dts.length>>1]||0)*3.2);
   for(let i=0;i<cs.length;i++){
-    if(out.length&&(cs[i].t-out[out.length-1].t)*rd.px>hgt*1.9)break; /* the avatar icon leaves a wide gap */
+    if(out.length&&(cs[i].t-out[out.length-1].t)*rd.px>thr)break;
     out.push(cs[i]);
   }
   while(out.length&&out[out.length-1].c===" ")out.pop();
@@ -558,7 +627,7 @@ function pName(rd,hgt,hasLevel){
 }
 async function paddleCands(P,r,ang0){
   const src=imgC&&imgC.width?imgC:img,h=r.h,cy=r.seg?(r.seg.y0+r.seg.y1)/2:r.cy,out=[],ang=window.__noTilt?0:(r.seg&&r.seg.ang)||ang0||0;
-  const x0=r.lx0-h*0.5,x1=r.seg?Math.max(r.seg.nx1+h*0.7,r.lx1+h*8):r.lx1+h*22; /* generous: the avatar gap ends the name */
+  const x0=r.lx0-h*0.5,x1=r.seg?Math.max(r.seg.nx1+h*(window.__CM||1.6),r.lx1+h*(window.__CW||8)):r.lx1+h*22; /* wide: the avatar gap ends the name, so a short estimate can't clip it */ /* generous: the avatar gap ends the name */
   for(const [vp,s,dy] of [[0.95,src,0],[1.3,src,0],[0.95,img,0],[0.95,src,0.3]]){ /* the last one sits lower so underscores aren't cut off */
     const rd=await pRead(P,s,x0,cy-h*vp+h*dy,x1-x0,h*vp*2,Math.abs(ang)>0.008?ang:0),n=pName(rd,h,true);
     if(!n)continue;
@@ -664,10 +733,15 @@ async function ocrScan(m){
       /* when the layout finder worked, rows only the full-page pass saw must be read the same way at least twice */
       const weak=!r.seg&&strict&&b.votes<2&&!(b.c>=80&&b.sup>=1.5&&alnumN(b.t)>=6); /* shown, but switched off */
       {const k=keyOf(b.t);if(HKEY.has(k)||[...HKEY].some(h=>h.length>=8&&(k.includes(h)||(k.length>=6&&h.startsWith(k)))))return} /* "BlackWidow" etc. from a costume title */
-      if(!/[A-Za-z]/.test(b.t)||/^(fantastic|uncanny|amazing|heroic|ignite|tide|control|destroy|enter)\b/i.test(b.t))return;
+      if(!/[A-Za-z]/.test(b.t)||/^(fantastic|uncanny|amazing|heroic|ignite|tide|control|destroy|enter)\b/i.test(b.t)||isTitle(b.t))return;
       if(alnumN(b.t)>=3&&(b.votes>=2||b.c>=60||alnumN(b.t)>=9||(r.seg&&b.sup>=1.5))&&(alnumN(b.t)>3||b.votes>=2)&&!got.some(g=>keyOf(g.t)===keyOf(b.t)))
-        got.push({t:b.t.replace(/\s*([_-])\s*/g,"$1"),c:b.c,sc:b.s,adj:true,x0:0,y0:r.cy,s:weak?0:1});
+        got.push({t:b.t.replace(/\s*([_-])\s*/g,"$1"),c:b.c,sc:b.s,adj:true,x0:0,y0:r.cy,h:r.h,conf:Math.max(0,(b.conf||0)-(weak?25:0)),s:weak?0:1});
     });
+    /* the same player read twice (two rows, or a fragment like "uanc" of "Juanchito_011"): keep the surer one */
+    got.sort((a,b)=>b.conf-a.conf);
+    for(let i=got.length-1;i>=0;i--){const a=got[i],ka=keyOf(a.t);
+      if(got.some((b,j)=>j<i&&(skel(b.t)===skel(a.t)||(ka.length>=3&&keyOf(b.t).includes(ka)))))got.splice(i,1)}
+    for(const o of got)if(o.conf<(window.__OFF??20))o.s=0; /* very unsure: listed last and switched off */
     let found=got;
     if(!found.length){prog(0.97,"Trying a fallback read");await setAll({tessedit_pageseg_mode:"11",tessedit_char_whitelist:""});
       const r11=(await w.recognize(img)).data.words||[];
@@ -677,7 +751,7 @@ async function ocrScan(m){
     /* iPhone Safari caps total canvas memory: free the big mask canvases now that we're done with them */
     for(const c of [mk,strictMk,colMk])if(c){c.width=c.height=0}
     $("dbg").textContent=dbg.join("\n")+"\n\nPASS 1 words: "+raw.map(o=>o.text).join(" ")+"\n\nPASS 2 words: "+raw2.map(o=>o.text).join(" ");
-    return {found:found.slice(0,16).sort((a,b)=>a.y0-b.y0),hidden};
+    return {found:found.slice(0,16).sort((a,b)=>(b.conf||0)-(a.conf||0)||a.y0-b.y0),hidden};
   }
 }
 /* ---------- scan ---------- */
@@ -696,14 +770,17 @@ $("go").onclick=async()=>{
 };
 /* ---------- settings ---------- */
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}},lsSet=(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,v)}catch(e){}};
-$("fast").checked=lsGet("rbh_fast")==="1";$("fast").onchange=()=>lsSet("rbh_fast",$("fast").checked?"1":"0");
 
+
+/* confidence label; names you typed or fixed yourself carry none */
+function cfTag(o){if(o.user||o.conf==null)return "";const c=o.conf;return c>=75?'<span class="cf hi">Sure</span>':c>=50?'<span class="cf md">Likely</span>':'<span class="cf lo">Check</span>'}
 function render(){
   $("s2").classList.remove("hide");
   $("chips").innerHTML="";
   cands.forEach(o=>{
     const d=document.createElement("span");d.className="chip c"+(o.s?1:0);
-    d.innerHTML=`${esc(o.t)}${o.agree?' <b class="ok" title="AI and OCR read it the same way">✓</b>':""}${o.unsure?` <small>check ${esc(o.unsure)}</small>`:""}${o.ocrOnly?" <small>OCR only</small>":""} <i>✎</i>`;
+    d.dataset.conf=o.user?100:(o.conf??"");
+    d.innerHTML=`${esc(o.t)} ${cfTag(o)} <i>✎</i>`;
     d.onclick=e=>{
       if(e.target.tagName!=="I"){o.s=o.s?0:1;touched.set(keyOf(o.t),o.s);render();return}
       /* edit in place (pop-up prompts don't work everywhere) */
@@ -720,7 +797,7 @@ $("ma").onclick=add;
 
 /* ---------- Players ---------- */
 $("confirm").onclick=()=>{
-  players=cands.filter(o=>o.s).map(o=>({n:o.t}));
+  players=cands.filter(o=>o.s).map(o=>({n:o.t,o})); /* same order as the chips: most likely correct first */
   if(!players.length)return;
   $("s3").classList.remove("hide");renderPlayers();$("s3").scrollIntoView({behavior:"smooth"});
   $("s3m").textContent="Tap a button to open that player’s tracker.gg profile.";
@@ -729,7 +806,7 @@ function renderPlayers(){
   const box=$("plist");box.innerHTML="";
   players.forEach(p=>{
     const r=document.createElement("div");r.className="row";
-    r.innerHTML=`<div class="nm">${esc(p.n)}</div><a class="lk f" target="_blank" rel="noopener" href="${prof(p.n)}">Open tracker.gg profile ↗</a>`;
+    r.innerHTML=`<div class="nm">${esc(p.n)} ${cfTag(p.o)}</div><a class="lk f" target="_blank" rel="noopener" href="${prof(p.n)}">Open tracker.gg profile ↗</a>`;
     box.appendChild(r);
   });
 }
